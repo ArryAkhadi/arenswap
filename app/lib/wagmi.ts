@@ -12,7 +12,7 @@ export const arcTestnet = defineChain({
     decimals: 6,
   },
   rpcUrls: {
-    default: { http: ['https://rpc.testnet.arcscan.app'] },
+    default: { http: ['https://rpc.testnet.arc.network'] },
   },
   blockExplorers: {
     default: {
@@ -25,6 +25,6 @@ export const arcTestnet = defineChain({
 export const wagmiConfig = createConfig({
   chains: [arcTestnet],
   transports: {
-    [arcTestnet.id]: http('https://rpc.testnet.arcscan.app'),
+    [arcTestnet.id]: http('https://rpc.testnet.arc.network'),
   },
 })
