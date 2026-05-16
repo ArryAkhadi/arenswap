@@ -186,20 +186,22 @@ function Spinner() {
 // ─── Swap card ─────────────────────────────────────────────────────────────────
 
 function SwapCard() {
+  const [payAmount, setPayAmount] = useState('')
+
   const {
     swapRate,
     isRateLoading,
     isRateError,
+    needsApproval,
     status,
     error,
     successTxHash,
     executeSwap,
     resetError,
-  } = useSwap()
+  } = useSwap(payAmount)
 
   const { isConnected } = useAccount()
   const chainId = useChainId()
-  const [payAmount, setPayAmount] = useState('')
 
   // Auto-dismiss success toast after 10 seconds
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -280,7 +282,12 @@ function SwapCard() {
       buttonLabel = 'Enter an amount'
       buttonDisabled = true
       buttonOnClick = undefined
+    } else if (needsApproval) {
+      buttonLabel = 'Approve USDC'
+      buttonDisabled = false
+      buttonOnClick = () => executeSwap(payAmount)
     }
+    // else: buttonLabel stays 'Swap', buttonDisabled stays false
   }
 
   return (

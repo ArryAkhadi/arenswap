@@ -19,6 +19,7 @@ import {
 
 export type SwapStatus =
   | 'idle'
+  | 'needs-approval'
   | 'approving'
   | 'approved'
   | 'swapping'
@@ -29,6 +30,7 @@ export interface UseSwapReturn {
   swapRate:      bigint | undefined
   isRateLoading: boolean
   isRateError:   boolean
+  needsApproval: boolean
   status:        SwapStatus
   error:         string | null
   successTxHash: `0x${string}` | undefined
@@ -52,8 +54,8 @@ export function computeReceiveAmount(amount: string, swapRate: bigint): number {
 
 // ─── Hook ──────────────────────────────────────────────────────────────────────
 
-export default function useSwap(): UseSwapReturn {
-  useAccount()
+export default function useSwap(usdcAmount: string = ''): UseSwapReturn {
+  const { address } = useAccount()
   useChainId()
 
   // Live swap rate from contract
@@ -70,6 +72,31 @@ export default function useSwap(): UseSwapReturn {
   const swapRate = swapRateData as bigint | undefined
   const isRateError = isRateErrorRaw || swapRate === BigInt(0)
 
+  // Live USDC allowance for the connected wallet
+  const {
+    data: allowanceData,
+    isLoading: isAllowanceLoading,
+  } = useReadContract({
+    abi: ERC20_ABI,
+    address: USDC_ADDRESS,
+    functionName: 'allowance',
+    args: address ? [address, ARENSWAP_ADDRESS] : undefined,
+    query: { enabled: !!address },
+  })
+
+  const allowance = allowanceData as bigint | undefined
+
+  // Derive needsApproval — computed, not stored in state
+  const needsApproval: boolean = (() => {
+    if (!usdcAmount || usdcAmount === '' || Number(usdcAmount) <= 0) return false
+    let encoded: bigint
+    try { encoded = encodeUsdcAmount(usdcAmount) } catch { return false }
+    if (encoded === BigInt(0)) return false
+    // Conservative: treat loading/undefined allowance as needing approval
+    if (isAllowanceLoading || allowance === undefined) return true
+    return allowance < encoded
+  })()
+
   // State machine
   const [status, setStatus] = useState<SwapStatus>('idle')
   const [error, setError] = useState<string | null>(null)
@@ -84,18 +111,36 @@ export default function useSwap(): UseSwapReturn {
   const swapReceipt    = useWaitForTransactionReceipt({ hash: swapWrite.data })
 
   // ─── executeSwap ─────────────────────────────────────────────────────────────
-  function executeSwap(usdcAmount: string): void {
-    const encoded = encodeUsdcAmount(usdcAmount)
+  function executeSwap(amount: string): void {
+    const encoded = encodeUsdcAmount(amount)
     if (encoded === BigInt(0)) return
+
+    // Guard: allowance still loading — do nothing
+    if (isAllowanceLoading || allowance === undefined) return
+
     capturedAmount.current = encoded
-    setStatus('approving')
     setError(null)
-    approveWrite.writeContract({
-      abi: ERC20_ABI,
-      address: USDC_ADDRESS,
-      functionName: 'approve',
-      args: [ARENSWAP_ADDRESS, encoded],
-    })
+
+    if (allowance >= encoded) {
+      // Sufficient allowance — skip approve, go straight to swap
+      setStatus('swapping')
+      swapWrite.writeContract({
+        abi: ARENSWAP_ABI,
+        address: ARENSWAP_ADDRESS,
+        functionName: 'swapUSDCToEURC',
+        args: [encoded],
+      })
+    } else {
+      // Insufficient allowance — request approval first
+      setStatus('needs-approval')
+      setStatus('approving')
+      approveWrite.writeContract({
+        abi: ERC20_ABI,
+        address: USDC_ADDRESS,
+        functionName: 'approve',
+        args: [ARENSWAP_ADDRESS, encoded],
+      })
+    }
   }
 
   function resetError(): void {
@@ -162,6 +207,7 @@ export default function useSwap(): UseSwapReturn {
     swapRate,
     isRateLoading,
     isRateError,
+    needsApproval,
     status,
     error,
     successTxHash,
