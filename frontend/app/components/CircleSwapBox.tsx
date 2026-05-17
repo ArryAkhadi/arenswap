@@ -66,10 +66,6 @@ const GAS_BUFFER_USDC = 0.5
 // Source: Circle SDK — ADAPTER_CONTRACT_EVM_TESTNET
 const ADAPTER_CONTRACT = '0xBBD70b01a1CAbc96d5b7b129Ae1AAabdf50dd40b' as const
 
-// Arc native USDC decimals for msg.value (gas token = 18 decimals)
-// The ERC-20 USDC contract uses 6 decimals; the native gas representation uses 18.
-const ARC_NATIVE_USDC_DECIMALS = 18
-
 // Adapter Contract ABI — only the execute() function we call
 // Source: Circle SDK adapterContractAbi
 const ADAPTER_ABI = [
@@ -994,19 +990,21 @@ export default function CircleSwapBox() {
       const instruction = tx.executionParams.instructions[0]
       const { tokenIn: instrTokenIn, amountToApprove } = instruction
 
-      // Step 3: ERC-20 approval — only needed for non-native tokenIn.
-      // On Arc, USDC is the native gas token, so USDC swaps send value directly.
-      // EURC and cirBTC are ERC-20 tokens and require approval.
+      // Step 3: ERC-20 approval for the Adapter Contract.
+      //
+      // On Arc Testnet, USDC is represented as an ERC-20 token at 0x3600...
+      // (not as native currency). ALL tokens (USDC, EURC, cirBTC) require
+      // ERC-20 approval to the Adapter Contract before the swap.
+      //
+      // The SDK's handleEvmTokenApproval skips approval only for:
+      //   - Native tokens (0xEeee...EeEe) — not applicable on Arc
+      //   - EIP-2612 permit tokens — we use the 'approve' strategy instead
+      //
+      // instrTokenIn from Circle's payload is the ERC-20 token address.
       const requiredAmount = amountToApprove ? BigInt(amountToApprove) : BigInt(0)
       let finalApproveTxHash: string | null = null
 
-      // instrTokenIn is the zero address (0x0000...0000) for native currency inputs.
-      // Only approve if it's a real ERC-20 address.
-      const ZERO_ADDR = '0x0000000000000000000000000000000000000000'
-      const isNativeInput = !instrTokenIn ||
-        instrTokenIn.toLowerCase() === ZERO_ADDR.toLowerCase()
-
-      if (!isNativeInput && instrTokenIn && requiredAmount > BigInt(0)) {
+      if (instrTokenIn && requiredAmount > BigInt(0)) {
         setPhaseSync('checking-allowance')
         let currentAllowance = BigInt(0)
         try {
@@ -1041,34 +1039,22 @@ export default function CircleSwapBox() {
         }
       }
 
-      // Step 4: Build and execute the adapter contract execute() call.
+      // Step 4: Build and execute the Adapter Contract execute() call.
       //
-      // The Circle Swap Kit routes swaps through the Adapter Contract, not
-      // directly to the DEX. The adapter's execute() is payable and expects:
-      //   - executeParams: the full struct (instructions, tokens, execId, deadline, metadata)
-      //   - tokenInputs: empty array (we use pre-approval, not EIP-2612 permit)
-      //   - signature: Circle's server-signed authorization
+      // The Circle Swap Kit routes swaps through the Adapter Contract:
+      //   AdapterContract.execute(executeParams, tokenInputs, signature)
       //
-      // For USDC→X swaps on Arc, USDC is the native gas token (18 decimals).
-      // The input amount must be sent as msg.value in native wei.
-      // amountBaseUnits is in 6-decimal ERC-20 units; convert to 18-decimal native.
+      // executeParams: the full struct from Circle's response
+      // tokenInputs:   tells the adapter which token to pull and how much
+      //                (PermitType.NONE = pre-approved via ERC-20 approve above)
+      // signature:     Circle's server-signed authorization
+      // value:         0 — all tokens on Arc are ERC-20, not native currency
+      //
+      // USDC on Arc is at 0x3600... (ERC-20, 6 decimals).
+      // The native gas token is also USDC but the swap uses the ERC-20 path.
       setPhaseSync('waiting-swap')
 
-      // Convert amountBaseUnits (6 decimals) to native USDC wei (18 decimals)
-      // by multiplying by 10^(18-6) = 10^12
-      const amountIn6dec = BigInt(data.amountBaseUnits)
-      const nativeValue = isNativeInput
-        ? amountIn6dec * BigInt(10 ** (ARC_NATIVE_USDC_DECIMALS - TOKEN_DECIMALS[tokenIn]))
-        : BigInt(0)
-
-      // Safety check: if tokenIn is USDC (native) and value is zero, abort.
-      // Submitting without value means the contract receives no swap input.
-      if (tokenIn === 'USDC' && nativeValue === BigInt(0)) {
-        throw new Error(
-          'Swap transaction is missing native USDC value. ' +
-          'The contract would receive no swap input.'
-        )
-      }
+      const inputAmount = BigInt(data.amountBaseUnits)
 
       // Build executeParams struct from Circle's response
       const executeParams = {
@@ -1090,10 +1076,40 @@ export default function CircleSwapBox() {
         metadata: tx.executionParams.metadata as `0x${string}`,
       }
 
-      // tokenInputs: empty for pre-approval flow (PermitType.NONE)
-      const tokenInputs: never[] = []
+      // tokenInputs: PermitType.NONE (0) = use pre-approved ERC-20 allowance.
+      // This matches the SDK's 'approve' allowanceStrategy path.
+      // The adapter reads the token from the user's wallet using the allowance
+      // granted in Step 3.
+      const tokenInputs = instrTokenIn
+        ? [
+            {
+              permitType:     0,                                    // PermitType.NONE
+              token:          instrTokenIn as `0x${string}`,
+              amount:         inputAmount,
+              permitCalldata: '0x' as `0x${string}`,
+            },
+          ]
+        : []
 
       const signature = (tx.signature ?? '0x') as `0x${string}`
+
+      if (process.env.NODE_ENV === 'development') {
+        console.log('[swap] Adapter execute() call:', {
+          to: ADAPTER_CONTRACT,
+          value: '0',
+          tokenIn,
+          tokenOut,
+          amountIn,
+          amountBaseUnits: data.amountBaseUnits,
+          instrTokenIn,
+          requiredAmount: requiredAmount.toString(),
+          tokenInputsCount: tokenInputs.length,
+          execId: tx.executionParams.execId,
+          deadline: tx.executionParams.deadline,
+          instructionCount: tx.executionParams.instructions.length,
+          signature: signature.slice(0, 20) + '…',
+        })
+      }
 
       const adapterCalldata = encodeFunctionData({
         abi: ADAPTER_ABI,
@@ -1101,26 +1117,10 @@ export default function CircleSwapBox() {
         args: [executeParams, tokenInputs, signature],
       })
 
-      if (process.env.NODE_ENV === 'development') {
-        console.log('[swap] Adapter execute() call:', {
-          to: ADAPTER_CONTRACT,
-          value: nativeValue.toString(),
-          tokenIn,
-          tokenOut,
-          amountIn,
-          amountBaseUnits: data.amountBaseUnits,
-          nativeValue: nativeValue.toString(),
-          isNativeInput,
-          execId: tx.executionParams.execId,
-          deadline: tx.executionParams.deadline,
-          instructionCount: tx.executionParams.instructions.length,
-        })
-      }
-
       const finalTxHash = await walletClient.sendTransaction({
         to: ADAPTER_CONTRACT,
         data: adapterCalldata,
-        value: nativeValue,
+        value: BigInt(0),   // ERC-20 path — no native value needed
         account: address,
         chain: walletClient.chain,
       })
