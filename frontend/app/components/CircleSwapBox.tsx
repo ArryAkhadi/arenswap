@@ -3,17 +3,19 @@
 /**
  * CircleSwapBox — same-chain token swap on Arc Testnet via Circle Swap Kit.
  *
- * Adapter note:
- *   @circle-fin/adapter-viem-v2 exports `createViemAdapterFromProvider`, which
- *   accepts an EIP-1193 provider (window.ethereum / wagmi connector). This is
- *   the browser-wallet path — no private key is required or used.
+ * Architecture:
+ *   1. Browser POSTs to /api/circle/swap (Next.js server route).
+ *   2. The server calls Circle's createSwap API (no CORS issue server-side).
+ *   3. The server returns the EVM transaction payload.
+ *   4. The browser executes the on-chain approve + swap using the user's wallet.
+ *
+ * No private key is used. No Circle API key is exposed to the browser.
  */
 
 import { useState } from 'react'
-import { useAccount, useWalletClient, useChainId, useSwitchChain } from 'wagmi'
+import { useAccount, useWalletClient, useChainId, useSwitchChain, usePublicClient } from 'wagmi'
 import { ConnectButton } from '@rainbow-me/rainbowkit'
-import { createSwapKitContext, swap } from '@circle-fin/swap-kit'
-import { createViemAdapterFromProvider } from '@circle-fin/adapter-viem-v2'
+import { encodeFunctionData } from 'viem'
 
 // ─── Constants ─────────────────────────────────────────────────────────────────
 
@@ -23,6 +25,58 @@ const ARC_TESTNET_EXPLORER = 'https://testnet.arcscan.app'
 const SUPPORTED_TOKENS = ['USDC', 'EURC', 'cirBTC'] as const
 type SupportedToken = (typeof SUPPORTED_TOKENS)[number]
 
+// Minimal ERC-20 ABI for approve
+const ERC20_APPROVE_ABI = [
+  {
+    name: 'approve',
+    type: 'function' as const,
+    stateMutability: 'nonpayable' as const,
+    inputs: [
+      { name: 'spender', type: 'address' },
+      { name: 'amount', type: 'uint256' },
+    ],
+    outputs: [{ name: '', type: 'bool' }],
+  },
+] as const
+
+// ─── Types ─────────────────────────────────────────────────────────────────────
+
+interface SwapTransaction {
+  // EVM transaction instruction from Circle
+  signature?: string
+  executionParams?: {
+    execId: string
+    deadline: string
+    metadata: string
+    tokens: Array<{ token: string; beneficiary: string }>
+    instructions: Array<{
+      target: string
+      data: string
+      value: string
+      tokenIn: string
+      amountToApprove: string
+      tokenOut: string
+      minTokenOut: string
+    }>
+  }
+  gasLimit?: string
+}
+
+interface ProxyResponse {
+  ok: boolean
+  tokenIn: string
+  tokenOut: string
+  amountIn: string
+  amountBaseUnits: string
+  estimatedAmount: string
+  stopLimit: string
+  fromAddress: string
+  toAddress: string
+  transaction: SwapTransaction
+  fees: unknown
+  error?: string
+}
+
 // ─── Helpers ───────────────────────────────────────────────────────────────────
 
 function isValidAmount(value: string): boolean {
@@ -30,24 +84,14 @@ function isValidAmount(value: string): boolean {
   return value.trim() !== '' && isFinite(n) && n > 0
 }
 
-/** Narrow an unknown swap result to extract display fields safely. */
-function extractSwapResult(result: unknown): {
-  txHash?: string
-  explorerUrl?: string
-  amountOut?: string
-  fees?: unknown
-} {
-  if (typeof result !== 'object' || result === null) return {}
-  const r = result as Record<string, unknown>
-  return {
-    txHash: typeof r.txHash === 'string' ? r.txHash : undefined,
-    explorerUrl:
-      typeof r.txHash === 'string'
-        ? `${ARC_TESTNET_EXPLORER}/tx/${r.txHash}`
-        : undefined,
-    amountOut: typeof r.amountOut === 'string' ? r.amountOut : undefined,
-    fees: r.fees,
-  }
+function isCorsOrFetchError(message: string): boolean {
+  return (
+    message.includes('Failed to fetch') ||
+    message.includes('CORS') ||
+    message.includes('x-user-agent') ||
+    message.includes('Access-Control-Allow-Headers') ||
+    message.includes('ERR_FAILED')
+  )
 }
 
 // ─── Token selector ────────────────────────────────────────────────────────────
@@ -97,26 +141,34 @@ function Spinner() {
 // ─── Main component ────────────────────────────────────────────────────────────
 
 export default function CircleSwapBox() {
-  const { isConnected } = useAccount()
+  const { isConnected, address } = useAccount()
   const chainId = useChainId()
   const { data: walletClient } = useWalletClient()
+  const publicClient = usePublicClient()
   const { switchChain, isPending: isSwitching } = useSwitchChain()
 
   const [tokenIn, setTokenIn] = useState<SupportedToken>('USDC')
   const [tokenOut, setTokenOut] = useState<SupportedToken>('EURC')
   const [amountIn, setAmountIn] = useState('')
-  const [isLoading, setIsLoading] = useState(false)
+  const [status, setStatus] = useState<
+    'idle' | 'requesting' | 'approving' | 'swapping' | 'success' | 'error'
+  >('idle')
   const [error, setError] = useState<string | null>(null)
-  const [result, setResult] = useState<ReturnType<typeof extractSwapResult> | null>(null)
-  const [rawResult, setRawResult] = useState<string | null>(null)
+  const [txHash, setTxHash] = useState<string | null>(null)
+  const [estimatedOut, setEstimatedOut] = useState<string | null>(null)
 
   const isOnArcTestnet = chainId === ARC_TESTNET_CHAIN_ID
-  const kitKey = process.env.NEXT_PUBLIC_CIRCLE_KIT_KEY
+  const isLoading = status === 'requesting' || status === 'approving' || status === 'swapping'
 
-  // ─── Kit key validation ───────────────────────────────────────────────────────
-
-  const kitKeyMissing = !kitKey
-  const kitKeyInvalidFormat = !!kitKey && !kitKey.startsWith('KIT_KEY:')
+  // ─── Kit key validation (public env var — format check only) ─────────────────
+  // The actual key lives in CIRCLE_KIT_KEY (server-only).
+  // NEXT_PUBLIC_CIRCLE_KIT_KEY is optional and only used for client-side format hints.
+  const publicKitKey = process.env.NEXT_PUBLIC_CIRCLE_KIT_KEY
+  const kitKeyMissing = publicKitKey !== undefined && publicKitKey === ''
+  const kitKeyInvalidFormat =
+    publicKitKey !== undefined &&
+    publicKitKey !== '' &&
+    !publicKitKey.startsWith('KIT_KEY:')
 
   // ─── Validation ──────────────────────────────────────────────────────────────
 
@@ -126,61 +178,123 @@ export default function CircleSwapBox() {
     if (!walletClient) return 'Wallet client unavailable. Try reconnecting.'
     if (tokenIn === tokenOut) return 'tokenIn and tokenOut must be different.'
     if (!isValidAmount(amountIn)) return 'Enter a valid amount greater than zero.'
-    if (kitKeyMissing) return 'NEXT_PUBLIC_CIRCLE_KIT_KEY is not set in your environment.'
-    if (kitKeyInvalidFormat) return 'Invalid Circle Kit Key format.'
     return null
   }
 
   const validationError = getValidationError()
   const canSwap = validationError === null && !isLoading
 
+  // ─── Reset ────────────────────────────────────────────────────────────────────
+
+  function reset() {
+    setError(null)
+    setTxHash(null)
+    setEstimatedOut(null)
+    setStatus('idle')
+  }
+
   // ─── Swap handler ─────────────────────────────────────────────────────────────
 
   async function handleSwap() {
-    if (!canSwap || !walletClient || !kitKey) return
+    if (!canSwap || !walletClient || !address || !publicClient) return
 
-    setIsLoading(true)
-    setError(null)
-    setResult(null)
-    setRawResult(null)
+    reset()
+    setStatus('requesting')
 
     try {
-      // Build the EIP-1193 provider from the wagmi wallet client's transport.
-      // wagmi's WalletClient wraps an EIP-1193 provider under `.transport`.
-      // We cast via `unknown` because the viem WalletClient type doesn't
-      // directly expose EIP1193Provider, but the runtime object is compatible.
-      const eip1193Provider = walletClient.transport as unknown as Parameters<
-        typeof createViemAdapterFromProvider
-      >[0]['provider']
-
-      const adapter = await createViemAdapterFromProvider({
-        provider: eip1193Provider,
-      })
-
-      const context = createSwapKitContext()
-
-      const swapResult = await swap(context, {
-        from: {
-          adapter,
+      // ── Step 1: Ask the server to call Circle createSwap ──────────────────
+      const res = await fetch('/api/circle/swap', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          tokenIn,
+          tokenOut,
+          amountIn,
+          fromAddress: address,
+          toAddress: address,
           chain: 'Arc_Testnet',
-        },
-        tokenIn,
-        tokenOut,
-        amountIn,
-        config: {
-          kitKey,
-        },
+        }),
       })
 
-      const extracted = extractSwapResult(swapResult)
-      setResult(extracted)
-      setRawResult(JSON.stringify(swapResult, null, 2))
+      const data: ProxyResponse = await res.json()
+
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error ?? `Server error ${res.status}`)
+      }
+
+      setEstimatedOut(data.estimatedAmount)
+
+      // ── Step 2: Execute on-chain transactions ─────────────────────────────
+      // The Circle SDK returns an EVM transaction payload with instructions.
+      // Each instruction contains: target, data, value, tokenIn, amountToApprove.
+      const tx = data.transaction as SwapTransaction
+
+      if (!tx?.executionParams?.instructions?.length) {
+        throw new Error('Circle returned an empty transaction payload.')
+      }
+
+      for (const instruction of tx.executionParams.instructions) {
+        const {
+          target,
+          data: calldata,
+          value: hexValue,
+          tokenIn: instrTokenIn,
+          amountToApprove,
+        } = instruction
+
+        // Approve the token spend if required
+        if (instrTokenIn && amountToApprove && BigInt(amountToApprove) > BigInt(0)) {
+          setStatus('approving')
+
+          const approveData = encodeFunctionData({
+            abi: ERC20_APPROVE_ABI,
+            functionName: 'approve',
+            args: [target as `0x${string}`, BigInt(amountToApprove)],
+          })
+
+          const approveTx = await walletClient.sendTransaction({
+            to: instrTokenIn as `0x${string}`,
+            data: approveData,
+            account: address,
+            chain: walletClient.chain,
+          })
+
+          // Wait for approval to be mined
+          await publicClient.waitForTransactionReceipt({ hash: approveTx })
+        }
+
+        // Execute the swap instruction
+        setStatus('swapping')
+
+        const txValue = hexValue && hexValue !== '0x' ? BigInt(hexValue) : BigInt(0)
+
+        const swapTxHash = await walletClient.sendTransaction({
+          to: target as `0x${string}`,
+          data: calldata as `0x${string}`,
+          value: txValue,
+          account: address,
+          chain: walletClient.chain,
+        })
+
+        setTxHash(swapTxHash)
+        await publicClient.waitForTransactionReceipt({ hash: swapTxHash })
+      }
+
+      setStatus('success')
     } catch (err: unknown) {
-      const message =
-        err instanceof Error ? err.message : 'An unexpected error occurred.'
-      setError(message)
-    } finally {
-      setIsLoading(false)
+      const message = err instanceof Error ? err.message : 'An unexpected error occurred.'
+
+      if (isCorsOrFetchError(message)) {
+        setError(
+          'Circle Stablecoin Service is blocked by browser CORS. ' +
+            'This deployment cannot call Circle swap endpoint directly from the browser. ' +
+            'The app needs a supported server-side swap flow or a Circle SDK/API fix.',
+        )
+      } else {
+        setError(message)
+      }
+
+      setStatus('error')
     }
   }
 
@@ -202,15 +316,13 @@ export default function CircleSwapBox() {
         <div className="p-5">
           {/* Header */}
           <div className="mb-5 flex items-center justify-between">
-            <h2 className="text-base font-semibold text-white">
-              Circle Swap Kit
-            </h2>
+            <h2 className="text-base font-semibold text-white">Swap</h2>
             <span className="rounded-full border border-blue-500/30 bg-blue-500/10 px-2.5 py-0.5 text-xs font-medium text-blue-400">
               Arc Testnet
             </span>
           </div>
 
-          {/* Kit key missing banner */}
+          {/* Kit key missing banner (public env var hint) */}
           {kitKeyMissing && (
             <div className="mb-4 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3">
               <p className="text-xs font-semibold text-amber-400">
@@ -225,9 +337,7 @@ export default function CircleSwapBox() {
           {/* Kit key invalid format banner */}
           {kitKeyInvalidFormat && (
             <div className="mb-4 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3">
-              <p className="text-xs font-semibold text-red-400">
-                Invalid Circle Kit Key format
-              </p>
+              <p className="text-xs font-semibold text-red-400">Invalid Circle Kit Key format</p>
               <p className="mt-1 text-xs text-red-300/80">
                 Use an App Kit / Kit Key from Circle Console. Do not use a regular Circle API key.
               </p>
@@ -271,8 +381,7 @@ export default function CircleSwapBox() {
                 value={tokenIn}
                 onChange={(v) => {
                   setTokenIn(v)
-                  setError(null)
-                  setResult(null)
+                  reset()
                 }}
                 exclude={tokenOut}
                 disabled={isLoading}
@@ -282,8 +391,7 @@ export default function CircleSwapBox() {
                 value={tokenOut}
                 onChange={(v) => {
                   setTokenOut(v)
-                  setError(null)
-                  setResult(null)
+                  reset()
                 }}
                 exclude={tokenIn}
                 disabled={isLoading}
@@ -306,8 +414,7 @@ export default function CircleSwapBox() {
                 value={amountIn}
                 onChange={(e) => {
                   setAmountIn(e.target.value)
-                  setError(null)
-                  setResult(null)
+                  reset()
                 }}
                 disabled={isLoading}
                 min="0"
@@ -316,6 +423,23 @@ export default function CircleSwapBox() {
                 className="rounded-xl border border-white/[0.08] bg-white/[0.03] px-4 py-3 text-xl font-semibold text-white outline-none placeholder:text-white/20 transition-colors hover:border-white/[0.14] focus:border-blue-500/50 focus:bg-white/[0.05] disabled:cursor-not-allowed disabled:opacity-50 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
               />
             </div>
+
+            {/* Status label */}
+            {status === 'requesting' && (
+              <p className="text-center text-xs text-white/40">
+                Requesting swap quote from Circle…
+              </p>
+            )}
+            {status === 'approving' && (
+              <p className="text-center text-xs text-white/40">
+                Approving token spend in your wallet…
+              </p>
+            )}
+            {status === 'swapping' && (
+              <p className="text-center text-xs text-white/40">
+                Confirm the swap transaction in your wallet…
+              </p>
+            )}
 
             {/* Swap button */}
             <button
@@ -331,75 +455,56 @@ export default function CircleSwapBox() {
               {isLoading ? (
                 <span className="flex items-center justify-center gap-2">
                   <Spinner />
-                  Swapping…
+                  {status === 'requesting'
+                    ? 'Getting quote…'
+                    : status === 'approving'
+                      ? 'Approving…'
+                      : 'Swapping…'}
                 </span>
               ) : (
                 `Swap ${tokenIn} → ${tokenOut}`
               )}
             </button>
 
-            {/* Inline validation hint (non-error) */}
+            {/* Inline validation hint */}
             {validationError && !error && isConnected && isOnArcTestnet && (
               <p className="text-center text-xs text-white/30">{validationError}</p>
             )}
           </div>
 
           {/* Error display */}
-          {error && (
+          {error && status === 'error' && (
             <div className="mt-4 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3">
               <p className="text-xs text-red-400">{error}</p>
             </div>
           )}
 
           {/* Success result */}
-          {result && (
+          {status === 'success' && txHash && (
             <div className="mt-4 flex flex-col gap-2 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3">
               <p className="text-xs font-semibold text-emerald-400">Swap successful!</p>
 
-              {result.txHash && (
-                <div className="flex items-center justify-between">
-                  <span className="text-xs text-white/40">Tx Hash</span>
-                  <a
-                    href={result.explorerUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="max-w-[180px] truncate text-xs text-emerald-400 underline hover:text-emerald-300"
-                  >
-                    {result.txHash}
-                  </a>
-                </div>
-              )}
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-white/40">Tx Hash</span>
+                <a
+                  href={`${ARC_TESTNET_EXPLORER}/tx/${txHash}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="max-w-[180px] truncate text-xs text-emerald-400 underline hover:text-emerald-300"
+                >
+                  {txHash}
+                </a>
+              </div>
 
-              {result.amountOut && (
+              {estimatedOut && (
                 <div className="flex items-center justify-between">
-                  <span className="text-xs text-white/40">Amount Out</span>
+                  <span className="text-xs text-white/40">Est. Output</span>
                   <span className="text-xs font-medium text-white/70">
-                    {result.amountOut} {tokenOut}
-                  </span>
-                </div>
-              )}
-
-              {result.fees !== undefined && (
-                <div className="flex items-start justify-between gap-2">
-                  <span className="shrink-0 text-xs text-white/40">Fees</span>
-                  <span className="text-right text-xs text-white/50">
-                    {JSON.stringify(result.fees)}
+                    {estimatedOut} {tokenOut}
                   </span>
                 </div>
               )}
             </div>
-          )}
-
-          {/* Raw JSON debug output */}
-          {rawResult && (
-            <details className="mt-3">
-              <summary className="cursor-pointer text-xs text-white/20 hover:text-white/40">
-                Raw result (debug)
-              </summary>
-              <pre className="mt-2 max-h-48 overflow-auto rounded-lg bg-white/[0.03] p-3 text-[10px] text-white/40">
-                {rawResult}
-              </pre>
-            </details>
           )}
         </div>
       </div>
@@ -413,8 +518,8 @@ export default function CircleSwapBox() {
           className="text-white/30 underline-offset-2 hover:text-white/50 hover:underline"
         >
           Circle Swap Kit
-        </a>
-        {' '}· Arc Testnet only
+        </a>{' '}
+        · Arc Testnet only
       </p>
     </div>
   )
