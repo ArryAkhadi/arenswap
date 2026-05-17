@@ -3,21 +3,16 @@
 /**
  * CircleSwapBox — same-chain token swap on Arc Testnet via Circle Swap Kit.
  *
- * Architecture:
- *   1. User fills form and clicks "Swap" → review modal appears.
- *   2. User confirms in modal → handleConfirmedSwap() is called (only here).
- *   3. Browser POSTs to /api/circle/swap (Next.js server proxy).
- *   4. Server calls Circle's createSwap API (no CORS issue server-side).
- *   5. Server returns the EVM transaction payload.
- *   6. Browser checks on-chain allowance, approves only if needed, then
- *      executes the swap using the user's connected wallet.
- *   7. Success is recorded in localStorage swap history.
+ * Swap verification flow:
+ *   1. Snapshot raw bigint balances for tokenIn and tokenOut BEFORE swap.
+ *   2. Execute swap transaction and wait for receipt.
+ *   3. Decode ERC-20 Transfer events from receipt logs to detect actual transfers.
+ *   4. Wait 1.5 s for RPC indexing, then re-read balances.
+ *   5. Compute deltas: tokenInDelta = before - after, tokenOutDelta = after - before.
+ *   6. Mark as "success" only if tokenInDelta > 0 AND tokenOutDelta > 0.
+ *   7. If receipt succeeded but no balance change detected, show distinct warning.
  *
  * No private key is used. No Circle API key is exposed to the browser.
- *
- * MetaMask confirmation flow:
- *   First-time swap:  1 approval  +  1 swap  =  2 confirmations
- *   Repeat swap:      0 approvals +  1 swap  =  1 confirmation
  */
 
 import { useCallback, useEffect, useRef, useState, startTransition } from 'react'
@@ -29,7 +24,7 @@ import {
   useWalletClient,
 } from 'wagmi'
 import { ConnectButton } from '@rainbow-me/rainbowkit'
-import { encodeFunctionData, formatUnits } from 'viem'
+import { encodeFunctionData, formatUnits, decodeEventLog } from 'viem'
 import { useSwapHistory } from '@/app/hooks/useSwapHistory'
 import type { SwapHistoryEntry } from '@/app/hooks/useSwapHistory'
 
@@ -48,6 +43,7 @@ const TOKEN_DECIMALS: Record<SupportedToken, number> = {
   cirBTC: 8,
 }
 
+// Canonical ERC-20 addresses on Arc Testnet (from Circle SDK token registry)
 const TOKEN_ADDRESSES: Record<SupportedToken, `0x${string}`> = {
   USDC:   '0x3600000000000000000000000000000000000000',
   EURC:   '0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a',
@@ -56,6 +52,9 @@ const TOKEN_ADDRESSES: Record<SupportedToken, `0x${string}`> = {
 
 // Leave 0.5 USDC as gas buffer when using Max (Arc uses USDC as native gas)
 const GAS_BUFFER_USDC = 0.5
+
+// ERC-20 Transfer event topic0
+const TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef' as const
 
 const ERC20_ABI = [
   {
@@ -85,6 +84,15 @@ const ERC20_ABI = [
     inputs: [{ name: 'account', type: 'address' }],
     outputs: [{ name: '', type: 'uint256' }],
   },
+  {
+    name: 'Transfer',
+    type: 'event' as const,
+    inputs: [
+      { name: 'from',  type: 'address', indexed: true },
+      { name: 'to',    type: 'address', indexed: true },
+      { name: 'value', type: 'uint256', indexed: false },
+    ],
+  },
 ] as const
 
 // ─── Phase ────────────────────────────────────────────────────────────────────
@@ -96,18 +104,22 @@ type Phase =
   | 'waiting-approval'
   | 'approval-confirmed'
   | 'waiting-swap'
+  | 'verifying'
   | 'success'
+  | 'confirmed-no-delta'   // tx confirmed but no balance change detected
   | 'error'
 
 const PHASE_LABELS: Record<Phase, string> = {
-  'idle':               '',
-  'preparing':          'Preparing swap\u2026',
-  'checking-allowance': 'Checking token allowance\u2026',
-  'waiting-approval':   'Confirm approval in your wallet\u2026',
-  'approval-confirmed': 'Approval confirmed. Preparing swap\u2026',
-  'waiting-swap':       'Confirm swap in your wallet\u2026',
-  'success':            'Swap successful!',
-  'error':              '',
+  'idle':                '',
+  'preparing':           'Preparing swap\u2026',
+  'checking-allowance':  'Checking token allowance\u2026',
+  'waiting-approval':    'Confirm approval in your wallet\u2026',
+  'approval-confirmed':  'Approval confirmed. Preparing swap\u2026',
+  'waiting-swap':        'Confirm swap in your wallet\u2026',
+  'verifying':           'Verifying token balances\u2026',
+  'success':             'Swap successful!',
+  'confirmed-no-delta':  'Transaction confirmed',
+  'error':               '',
 }
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
@@ -141,14 +153,33 @@ interface ProxyResponse {
   tokenOutDecimals: number
   amountIn: string
   amountBaseUnits: string
-  estimatedAmount: string | null          // raw base units from Circle
-  estimatedAmountFormatted: string | null // human-readable decimal, formatted server-side
+  estimatedAmount: string | null
+  estimatedAmountFormatted: string | null
   stopLimit: string
   fromAddress: string
   toAddress: string
   transaction: SwapTransaction
   fees: unknown
   error?: string
+}
+
+interface BalanceSnapshot {
+  rawIn: bigint
+  rawOut: bigint
+}
+
+interface VerificationResult {
+  deltaIn: bigint        // tokenIn spent (positive = decreased)
+  deltaOut: bigint       // tokenOut received (positive = increased)
+  deltaInFormatted: string
+  deltaOutFormatted: string
+  balanceInAfter: bigint
+  balanceOutAfter: bigint
+  balanceInFormatted: string
+  balanceOutFormatted: string
+  transfersDetected: boolean
+  transferInAmount: string | null   // from Transfer event logs
+  transferOutAmount: string | null
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
@@ -193,6 +224,13 @@ function formatBalance(raw: bigint, decimals: number): string {
   return n.toLocaleString(undefined, { maximumFractionDigits: 6 })
 }
 
+function formatDelta(raw: bigint, decimals: number): string {
+  if (raw === BigInt(0)) return '0'
+  const s = formatUnits(raw < BigInt(0) ? -raw : raw, decimals)
+  const n = parseFloat(s)
+  return n.toLocaleString(undefined, { maximumFractionDigits: 6 })
+}
+
 // ─── Spinner ──────────────────────────────────────────────────────────────────
 
 function Spinner({ size = 4 }: { size?: number }) {
@@ -225,18 +263,14 @@ function TokenSelect({
   return (
     <div className="flex flex-col gap-1">
       <div className="flex items-center justify-between">
-        <label className="text-xs font-medium uppercase tracking-wider text-white/40">
-          {label}
-        </label>
+        <label className="text-xs font-medium uppercase tracking-wider text-white/40">{label}</label>
         {balance !== undefined && (
           <span className="text-xs text-white/30">
-            {balanceLoading ? (
-              <span className="opacity-50">loading\u2026</span>
-            ) : balance !== null ? (
-              <>{balance} {value}</>
-            ) : (
-              <span className="opacity-40">unavailable</span>
-            )}
+            {balanceLoading
+              ? <span className="opacity-50">loading\u2026</span>
+              : balance !== null
+                ? <>{balance} {value}</>
+                : <span className="opacity-40">unavailable</span>}
           </span>
         )}
       </div>
@@ -281,29 +315,14 @@ interface ReviewModalProps {
 
 function ReviewModal({ tokenIn, tokenOut, amountIn, address, onConfirm, onCancel }: ReviewModalProps) {
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="review-modal-title"
-    >
-      <div
-        className="absolute inset-0 bg-black/70 backdrop-blur-sm"
-        onClick={onCancel}
-        aria-hidden="true"
-      />
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-labelledby="review-modal-title">
+      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onCancel} aria-hidden="true" />
       <div className="relative w-full max-w-sm rounded-3xl border border-white/[0.10] bg-[#111318] shadow-2xl shadow-black/80">
-        <div
-          className="pointer-events-none absolute inset-x-0 top-0 h-px rounded-t-3xl"
-          style={{ background: 'linear-gradient(90deg, transparent, rgba(59,130,246,0.6) 40%, rgba(99,102,241,0.6) 60%, transparent)' }}
-          aria-hidden="true"
-        />
+        <div className="pointer-events-none absolute inset-x-0 top-0 h-px rounded-t-3xl" style={{ background: 'linear-gradient(90deg, transparent, rgba(59,130,246,0.6) 40%, rgba(99,102,241,0.6) 60%, transparent)' }} aria-hidden="true" />
         <div className="p-6">
-          <h2 id="review-modal-title" className="mb-5 text-base font-semibold text-white">
-            Review Swap
-          </h2>
+          <h2 id="review-modal-title" className="mb-5 text-base font-semibold text-white">Review Swap</h2>
           <div className="mb-5 rounded-2xl border border-white/[0.06] bg-white/[0.03] p-4 space-y-3">
-            <ModalRow label="You pay"    value={`${amountIn} ${tokenIn}`} highlight />
+            <ModalRow label="You pay"     value={`${amountIn} ${tokenIn}`} highlight />
             <ModalRow label="You receive" value={`${tokenOut} (estimated on-chain)`} />
             <div className="border-t border-white/[0.06] pt-3 space-y-2">
               <ModalRow label="Network"  value={ARC_TESTNET_NAME} />
@@ -318,20 +337,8 @@ function ReviewModal({ tokenIn, tokenOut, amountIn, address, onConfirm, onCancel
             </p>
           </div>
           <div className="flex gap-3">
-            <button
-              type="button"
-              onClick={onCancel}
-              className="flex-1 rounded-2xl border border-white/[0.08] py-3 text-sm font-semibold text-white/50 transition-colors hover:border-white/[0.14] hover:text-white/80"
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              onClick={onConfirm}
-              className="flex-1 rounded-2xl bg-gradient-to-r from-blue-500 to-indigo-600 py-3 text-sm font-semibold text-white shadow-lg shadow-blue-500/25 transition-all hover:from-blue-400 hover:to-indigo-500 active:scale-[0.98]"
-            >
-              Confirm Swap
-            </button>
+            <button type="button" onClick={onCancel} className="flex-1 rounded-2xl border border-white/[0.08] py-3 text-sm font-semibold text-white/50 transition-colors hover:border-white/[0.14] hover:text-white/80">Cancel</button>
+            <button type="button" onClick={onConfirm} className="flex-1 rounded-2xl bg-gradient-to-r from-blue-500 to-indigo-600 py-3 text-sm font-semibold text-white shadow-lg shadow-blue-500/25 transition-all hover:from-blue-400 hover:to-indigo-500 active:scale-[0.98]">Confirm Swap</button>
           </div>
         </div>
       </div>
@@ -343,31 +350,33 @@ function ModalRow({ label, value, highlight }: { label: string; value: string; h
   return (
     <div className="flex items-center justify-between gap-2">
       <span className="text-xs text-white/40 shrink-0">{label}</span>
-      <span className={`text-xs font-medium text-right ${highlight ? 'text-white' : 'text-white/70'}`}>
-        {value}
-      </span>
+      <span className={`text-xs font-medium text-right ${highlight ? 'text-white' : 'text-white/70'}`}>{value}</span>
     </div>
   )
 }
 
-// ─── Success Card ─────────────────────────────────────────────────────────────
+// ─── Result Card ──────────────────────────────────────────────────────────────
+// Handles both 'success' and 'confirmed-no-delta' states.
 
-interface SuccessCardProps {
+interface ResultCardProps {
+  phase: Phase
   tokenIn: SupportedToken
   tokenOut: SupportedToken
   amountIn: string
   estimatedOut: string | null
   approveTxHash: string | null
   swapTxHash: string
-  balanceIn: string | null
-  balanceOut: string | null
+  verification: VerificationResult | null
+  onVerify: () => void
+  verifying: boolean
 }
 
-function SuccessCard({
-  tokenIn, tokenOut, amountIn, estimatedOut,
-  approveTxHash, swapTxHash, balanceIn, balanceOut,
-}: SuccessCardProps) {
+function ResultCard({
+  phase, tokenIn, tokenOut, amountIn, estimatedOut,
+  approveTxHash, swapTxHash, verification, onVerify, verifying,
+}: ResultCardProps) {
   const [copied, setCopied] = useState(false)
+  const isSuccess = phase === 'success'
 
   function copyHash() {
     navigator.clipboard.writeText(swapTxHash).then(() => {
@@ -377,55 +386,99 @@ function SuccessCard({
   }
 
   return (
-    <div className="mt-4 rounded-2xl border border-emerald-500/30 bg-emerald-500/[0.07] p-4 space-y-3">
+    <div className={`mt-4 rounded-2xl border p-4 space-y-3 ${
+      isSuccess
+        ? 'border-emerald-500/30 bg-emerald-500/[0.07]'
+        : 'border-amber-500/30 bg-amber-500/[0.07]'
+    }`}>
+      {/* Status header */}
       <div className="flex items-center gap-2">
-        <svg className="h-4 w-4 text-emerald-400 shrink-0" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-          <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
-        </svg>
-        <p className="text-sm font-semibold text-emerald-400">Swap successful!</p>
+        {isSuccess ? (
+          <svg className="h-4 w-4 text-emerald-400 shrink-0" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+            <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+          </svg>
+        ) : (
+          <svg className="h-4 w-4 text-amber-400 shrink-0" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+            <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+          </svg>
+        )}
+        <p className={`text-sm font-semibold ${isSuccess ? 'text-emerald-400' : 'text-amber-400'}`}>
+          {isSuccess ? 'Swap successful!' : 'Transaction confirmed, balance change not detected'}
+        </p>
       </div>
+
+      {!isSuccess && (
+        <p className="text-xs text-amber-300/70 leading-relaxed">
+          The transaction was mined successfully, but the expected token balance changes were not detected.
+          Check the explorer transaction and token transfer logs.
+        </p>
+      )}
+
       <div className="space-y-2 text-xs">
+        {/* Amounts */}
         <div className="flex items-center justify-between">
           <span className="text-white/40">Swapped</span>
           <span className="text-white/70 font-medium">{amountIn} {tokenIn} &rarr; {tokenOut}</span>
         </div>
-        {estimatedOut && (
+
+        {/* Actual delta from verification */}
+        {verification && verification.deltaOut > BigInt(0) && (
+          <div className="flex items-center justify-between">
+            <span className="text-white/40">Received</span>
+            <span className="text-white/70 font-medium">{verification.deltaOutFormatted} {tokenOut}</span>
+          </div>
+        )}
+        {verification && verification.deltaOut === BigInt(0) && estimatedOut && (
+          <div className="flex items-center justify-between">
+            <span className="text-white/40">Est. received</span>
+            <span className="text-white/50 font-medium">{estimatedOut} {tokenOut}</span>
+          </div>
+        )}
+        {!verification && estimatedOut && (
           <div className="flex items-center justify-between">
             <span className="text-white/40">Est. received</span>
             <span className="text-white/70 font-medium">{estimatedOut} {tokenOut}</span>
           </div>
         )}
-        {!estimatedOut && (
-          <div className="flex items-center justify-between">
-            <span className="text-white/40">Output</span>
-            <span className="text-white/40 italic">Available on explorer</span>
+
+        {/* Transfer events */}
+        {verification?.transfersDetected && (
+          <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-2 space-y-1">
+            <p className="text-[10px] font-semibold text-white/30 uppercase tracking-wider">Transfer events</p>
+            {verification.transferInAmount && (
+              <div className="flex items-center justify-between">
+                <span className="text-white/30">Sent</span>
+                <span className="text-white/50">{verification.transferInAmount} {tokenIn}</span>
+              </div>
+            )}
+            {verification.transferOutAmount && (
+              <div className="flex items-center justify-between">
+                <span className="text-white/30">Received</span>
+                <span className="text-white/50">{verification.transferOutAmount} {tokenOut}</span>
+              </div>
+            )}
           </div>
         )}
-        {(balanceIn !== null || balanceOut !== null) && (
+
+        {/* Post-swap balances */}
+        {verification && (
           <div className="border-t border-white/[0.06] pt-2 space-y-1.5">
-            {balanceIn !== null && (
-              <div className="flex items-center justify-between">
-                <span className="text-white/30">New {tokenIn} balance</span>
-                <span className="text-white/50 font-medium">{balanceIn} {tokenIn}</span>
-              </div>
-            )}
-            {balanceOut !== null && (
-              <div className="flex items-center justify-between">
-                <span className="text-white/30">New {tokenOut} balance</span>
-                <span className="text-white/50 font-medium">{balanceOut} {tokenOut}</span>
-              </div>
-            )}
+            <div className="flex items-center justify-between">
+              <span className="text-white/30">New {tokenIn} balance</span>
+              <span className="text-white/50 font-medium">{verification.balanceInFormatted} {tokenIn}</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-white/30">New {tokenOut} balance</span>
+              <span className="text-white/50 font-medium">{verification.balanceOutFormatted} {tokenOut}</span>
+            </div>
           </div>
         )}
+
+        {/* Tx links */}
         {approveTxHash && (
           <div className="flex items-center justify-between gap-2">
             <span className="text-white/40 shrink-0">Approval</span>
-            <a
-              href={`${ARC_TESTNET_EXPLORER}/tx/${approveTxHash}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-white/40 underline underline-offset-2 hover:text-white/60 truncate max-w-[160px]"
-            >
+            <a href={`${ARC_TESTNET_EXPLORER}/tx/${approveTxHash}`} target="_blank" rel="noopener noreferrer" className="text-white/40 underline underline-offset-2 hover:text-white/60 truncate max-w-[160px]">
               {truncateHash(approveTxHash)}
             </a>
           </div>
@@ -433,33 +486,29 @@ function SuccessCard({
         <div className="flex items-center justify-between gap-2">
           <span className="text-white/40 shrink-0">Swap Tx</span>
           <div className="flex items-center gap-1.5 min-w-0">
-            <a
-              href={`${ARC_TESTNET_EXPLORER}/tx/${swapTxHash}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-emerald-400 underline underline-offset-2 hover:text-emerald-300 truncate max-w-[140px]"
-            >
+            <a href={`${ARC_TESTNET_EXPLORER}/tx/${swapTxHash}`} target="_blank" rel="noopener noreferrer" className={`underline underline-offset-2 truncate max-w-[130px] ${isSuccess ? 'text-emerald-400 hover:text-emerald-300' : 'text-amber-400 hover:text-amber-300'}`}>
               {truncateHash(swapTxHash)}
             </a>
-            <button
-              type="button"
-              onClick={copyHash}
-              aria-label="Copy swap transaction hash"
-              className="shrink-0 rounded-md p-1 text-white/30 transition-colors hover:bg-white/[0.06] hover:text-white/60"
-            >
-              {copied ? (
-                <svg className="h-3.5 w-3.5 text-emerald-400" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                  <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                </svg>
-              ) : (
-                <svg className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                  <path d="M8 3a1 1 0 011-1h2a1 1 0 110 2H9a1 1 0 01-1-1z" />
-                  <path d="M6 3a2 2 0 00-2 2v11a2 2 0 002 2h8a2 2 0 002-2V5a2 2 0 00-2-2 3 3 0 01-3 3H9a3 3 0 01-3-3z" />
-                </svg>
-              )}
+            <button type="button" onClick={copyHash} aria-label="Copy swap transaction hash" className="shrink-0 rounded-md p-1 text-white/30 transition-colors hover:bg-white/[0.06] hover:text-white/60">
+              {copied
+                ? <svg className="h-3.5 w-3.5 text-emerald-400" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" /></svg>
+                : <svg className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M8 3a1 1 0 011-1h2a1 1 0 110 2H9a1 1 0 01-1-1z" /><path d="M6 3a2 2 0 00-2 2v11a2 2 0 002 2h8a2 2 0 002-2V5a2 2 0 00-2-2 3 3 0 01-3 3H9a3 3 0 01-3-3z" /></svg>}
             </button>
           </div>
         </div>
+
+        {/* Verify button */}
+        <button
+          type="button"
+          onClick={onVerify}
+          disabled={verifying}
+          className="mt-1 flex items-center gap-1.5 text-xs text-white/25 transition-colors hover:text-white/50 disabled:opacity-30"
+        >
+          <svg className={`h-3 w-3 ${verifying ? 'animate-spin' : ''}`} viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+            <path fillRule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clipRule="evenodd" />
+          </svg>
+          {verifying ? 'Verifying\u2026' : 'Verify transaction'}
+        </button>
       </div>
     </div>
   )
@@ -478,52 +527,25 @@ function RecentSwaps({ history, onClear }: RecentSwapsProps) {
     <div className="mt-6 w-full">
       <div className="mb-3 flex items-center justify-between">
         <h3 className="text-sm font-semibold text-white/60">Recent Swaps</h3>
-        <button
-          type="button"
-          onClick={onClear}
-          className="text-xs text-white/20 transition-colors hover:text-white/50"
-        >
-          Clear
-        </button>
+        <button type="button" onClick={onClear} className="text-xs text-white/20 transition-colors hover:text-white/50">Clear</button>
       </div>
       <div className="space-y-2">
         {history.map((entry) => (
           <div key={entry.id} className="rounded-2xl border border-white/[0.06] bg-white/[0.02] px-4 py-3">
             <div className="flex items-center justify-between mb-1.5">
-              <span className="text-xs font-semibold text-white/70">
-                {entry.amountIn} {entry.tokenIn} &rarr; {entry.tokenOut}
-              </span>
+              <span className="text-xs font-semibold text-white/70">{entry.amountIn} {entry.tokenIn} &rarr; {entry.tokenOut}</span>
               <span className="text-[10px] text-white/25">
-                {new Date(entry.timestamp).toLocaleString(undefined, {
-                  month: 'short', day: 'numeric',
-                  hour: '2-digit', minute: '2-digit',
-                })}
+                {new Date(entry.timestamp).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
               </span>
             </div>
             {entry.estimatedOut && (
-              <p className="text-[11px] text-white/40 mb-1.5">
-                Est. received: {entry.estimatedOut} {entry.tokenOut}
-              </p>
+              <p className="text-[11px] text-white/40 mb-1.5">Est. received: {entry.estimatedOut} {entry.tokenOut}</p>
             )}
             <div className="flex items-center gap-3 flex-wrap">
               {entry.approveTxHash && (
-                <a
-                  href={`${ARC_TESTNET_EXPLORER}/tx/${entry.approveTxHash}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-[11px] text-white/30 underline underline-offset-2 hover:text-white/50"
-                >
-                  Approval &nearr;
-                </a>
+                <a href={`${ARC_TESTNET_EXPLORER}/tx/${entry.approveTxHash}`} target="_blank" rel="noopener noreferrer" className="text-[11px] text-white/30 underline underline-offset-2 hover:text-white/50">Approval &nearr;</a>
               )}
-              <a
-                href={`${ARC_TESTNET_EXPLORER}/tx/${entry.swapTxHash}`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-[11px] text-emerald-500/70 underline underline-offset-2 hover:text-emerald-400"
-              >
-                Swap Tx &nearr;
-              </a>
+              <a href={`${ARC_TESTNET_EXPLORER}/tx/${entry.swapTxHash}`} target="_blank" rel="noopener noreferrer" className="text-[11px] text-emerald-500/70 underline underline-offset-2 hover:text-emerald-400">Swap Tx &nearr;</a>
             </div>
           </div>
         ))}
@@ -531,8 +553,7 @@ function RecentSwaps({ history, onClear }: RecentSwapsProps) {
     </div>
   )
 }
-
-// ─── Main component ────────────────────────────────────────────────────────────
+//  Main component ─
 
 export default function CircleSwapBox() {
   const { isConnected, address } = useAccount()
@@ -552,28 +573,29 @@ export default function CircleSwapBox() {
   const [swapTxHash, setSwapTxHash] = useState<string | null>(null)
   const [estimatedOut, setEstimatedOut] = useState<string | null>(null)
   const [showModal, setShowModal] = useState(false)
+  const [verification, setVerification] = useState<VerificationResult | null>(null)
+  const [verifying, setVerifying] = useState(false)
 
-  // tokenIn balance (shown in From selector)
   const [balanceIn, setBalanceIn] = useState<string | null>(null)
-  // tokenOut balance (shown in To selector and success card)
   const [balanceOut, setBalanceOut] = useState<string | null>(null)
   const [balanceLoading, setBalanceLoading] = useState(false)
-  // Set to true after swap success so UI can show "may take a moment" hint
   const [balanceStale, setBalanceStale] = useState(false)
 
-  // Synchronous duplicate-submit lock
   const isSwappingRef = useRef(false)
-  // Synchronous phase ref for catch blocks
   const phaseRef = useRef<Phase>('idle')
+  // Stores the last swap tx hash for the "Verify transaction" button
+  const lastSwapTxRef = useRef<string | null>(null)
+  // Stores pre-swap balance snapshot
+  const snapshotRef = useRef<BalanceSnapshot | null>(null)
 
   const isActive =
     phase === 'preparing' ||
     phase === 'checking-allowance' ||
     phase === 'waiting-approval' ||
     phase === 'approval-confirmed' ||
-    phase === 'waiting-swap'
+    phase === 'waiting-swap' ||
+    phase === 'verifying'
 
-  // Kit key format hint (public env var only — real key stays server-side)
   const publicKitKey = process.env.NEXT_PUBLIC_CIRCLE_KIT_KEY
   const kitKeyMissing = publicKitKey !== undefined && publicKitKey === ''
   const kitKeyInvalidFormat =
@@ -581,9 +603,24 @@ export default function CircleSwapBox() {
     publicKitKey !== '' &&
     !publicKitKey.startsWith('KIT_KEY:')
 
-  // ─── Balance fetch — reads both tokenIn and tokenOut ───────────────────────
-  // Uses viem readContract directly (no wagmi query cache) so we always get
-  // fresh on-chain data when called explicitly after a swap.
+  //  Read raw bigint balance for a single token 
+
+  async function readRawBalance(token: SupportedToken): Promise<bigint> {
+    if (!address || !publicClient) return BigInt(0)
+    try {
+      const result = await publicClient.readContract({
+        address: TOKEN_ADDRESSES[token],
+        abi: ERC20_ABI,
+        functionName: 'balanceOf',
+        args: [address],
+      })
+      return result as bigint
+    } catch {
+      return BigInt(0)
+    }
+  }
+
+  //  Balance fetch (display) 
 
   const fetchBalances = useCallback(async (inToken: SupportedToken, outToken: SupportedToken) => {
     if (!address || !publicClient || chainId !== ARC_TESTNET_CHAIN_ID) {
@@ -593,30 +630,12 @@ export default function CircleSwapBox() {
     startTransition(() => setBalanceLoading(true))
     try {
       const [rawIn, rawOut] = await Promise.allSettled([
-        publicClient.readContract({
-          address: TOKEN_ADDRESSES[inToken],
-          abi: ERC20_ABI,
-          functionName: 'balanceOf',
-          args: [address],
-        }),
-        publicClient.readContract({
-          address: TOKEN_ADDRESSES[outToken],
-          abi: ERC20_ABI,
-          functionName: 'balanceOf',
-          args: [address],
-        }),
+        publicClient.readContract({ address: TOKEN_ADDRESSES[inToken], abi: ERC20_ABI, functionName: 'balanceOf', args: [address] }),
+        publicClient.readContract({ address: TOKEN_ADDRESSES[outToken], abi: ERC20_ABI, functionName: 'balanceOf', args: [address] }),
       ])
       startTransition(() => {
-        setBalanceIn(
-          rawIn.status === 'fulfilled'
-            ? formatBalance(rawIn.value as bigint, TOKEN_DECIMALS[inToken])
-            : null
-        )
-        setBalanceOut(
-          rawOut.status === 'fulfilled'
-            ? formatBalance(rawOut.value as bigint, TOKEN_DECIMALS[outToken])
-            : null
-        )
+        setBalanceIn(rawIn.status === 'fulfilled' ? formatBalance(rawIn.value as bigint, TOKEN_DECIMALS[inToken]) : null)
+        setBalanceOut(rawOut.status === 'fulfilled' ? formatBalance(rawOut.value as bigint, TOKEN_DECIMALS[outToken]) : null)
       })
     } catch {
       startTransition(() => { setBalanceIn(null); setBalanceOut(null) })
@@ -625,16 +644,135 @@ export default function CircleSwapBox() {
     }
   }, [address, publicClient, chainId])
 
-  // Refetch whenever wallet, chain, or selected tokens change
   useEffect(() => {
     let cancelled = false
-    fetchBalances(tokenIn, tokenOut)
-      .then(() => { if (cancelled) return })
-      .catch(() => {})
+    fetchBalances(tokenIn, tokenOut).then(() => { if (cancelled) return }).catch(() => {})
     return () => { cancelled = true }
   }, [fetchBalances, tokenIn, tokenOut])
 
-  // ─── Max button ─────────────────────────────────────────────────────────────
+  //  Decode Transfer events from receipt logs 
+
+  function decodeTransfers(
+    logs: readonly { address: string; topics: readonly string[]; data: string }[],
+    walletAddr: string,
+    inToken: SupportedToken,
+    outToken: SupportedToken,
+  ): { transferInAmount: string | null; transferOutAmount: string | null; transfersDetected: boolean } {
+    let transferInAmount: string | null = null
+    let transferOutAmount: string | null = null
+    const wallet = walletAddr.toLowerCase()
+
+    for (const log of logs) {
+      if (log.topics[0]?.toLowerCase() !== TRANSFER_TOPIC.toLowerCase()) continue
+      try {
+        const decoded = decodeEventLog({
+          abi: ERC20_ABI,
+          eventName: 'Transfer',
+          topics: log.topics as [`0x${string}`, ...`0x${string}`[]],
+          data: log.data as `0x${string}`,
+        })
+        const from = (decoded.args as { from: string; to: string; value: bigint }).from.toLowerCase()
+        const to = (decoded.args as { from: string; to: string; value: bigint }).to.toLowerCase()
+        const value = (decoded.args as { from: string; to: string; value: bigint }).value
+
+        const logAddr = log.address.toLowerCase()
+        const inAddr = TOKEN_ADDRESSES[inToken].toLowerCase()
+        const outAddr = TOKEN_ADDRESSES[outToken].toLowerCase()
+
+        // tokenIn leaving wallet
+        if (logAddr === inAddr && from === wallet) {
+          transferInAmount = formatDelta(value, TOKEN_DECIMALS[inToken])
+        }
+        // tokenOut entering wallet
+        if (logAddr === outAddr && to === wallet) {
+          transferOutAmount = formatDelta(value, TOKEN_DECIMALS[outToken])
+        }
+      } catch {
+        // log not decodable as Transfer  skip
+      }
+    }
+
+    return {
+      transferInAmount,
+      transferOutAmount,
+      transfersDetected: transferInAmount !== null || transferOutAmount !== null,
+    }
+  }
+
+  //  Verify swap result 
+
+  async function verifySwap(
+    txHash: string,
+    snapshot: BalanceSnapshot,
+    inToken: SupportedToken,
+    outToken: SupportedToken,
+  ): Promise<{ result: VerificationResult; passed: boolean }> {
+    if (!publicClient || !address) throw new Error('No public client')
+
+    // Re-read receipt for log decoding
+    const receipt = await publicClient.getTransactionReceipt({ hash: txHash as `0x${string}` })
+
+    // Decode Transfer events
+    const transfers = decodeTransfers(
+      receipt.logs as { address: string; topics: readonly string[]; data: string }[],
+      address,
+      inToken,
+      outToken,
+    )
+
+    // Read post-swap balances
+    const [rawInAfter, rawOutAfter] = await Promise.all([
+      readRawBalance(inToken),
+      readRawBalance(outToken),
+    ])
+
+    const deltaIn = snapshot.rawIn - rawInAfter    // positive = spent
+    const deltaOut = rawOutAfter - snapshot.rawOut  // positive = received
+
+    const result: VerificationResult = {
+      deltaIn,
+      deltaOut,
+      deltaInFormatted: formatDelta(deltaIn < BigInt(0) ? -deltaIn : deltaIn, TOKEN_DECIMALS[inToken]),
+      deltaOutFormatted: formatDelta(deltaOut < BigInt(0) ? -deltaOut : deltaOut, TOKEN_DECIMALS[outToken]),
+      balanceInAfter: rawInAfter,
+      balanceOutAfter: rawOutAfter,
+      balanceInFormatted: formatBalance(rawInAfter, TOKEN_DECIMALS[inToken]),
+      balanceOutFormatted: formatBalance(rawOutAfter, TOKEN_DECIMALS[outToken]),
+      transfersDetected: transfers.transfersDetected,
+      transferInAmount: transfers.transferInAmount,
+      transferOutAmount: transfers.transferOutAmount,
+    }
+
+    // Pass if balance deltas show expected direction, OR if Transfer events detected
+    const passed = (deltaIn > BigInt(0) && deltaOut > BigInt(0)) || transfers.transfersDetected
+
+    return { result, passed }
+  }
+
+  //  Manual verify button 
+
+  async function handleVerify() {
+    const txHash = lastSwapTxRef.current
+    const snapshot = snapshotRef.current
+    if (!txHash || !snapshot || verifying) return
+    setVerifying(true)
+    try {
+      const { result, passed } = await verifySwap(txHash, snapshot, tokenIn, tokenOut)
+      setVerification(result)
+      // Update displayed balances
+      startTransition(() => {
+        setBalanceIn(result.balanceInFormatted)
+        setBalanceOut(result.balanceOutFormatted)
+      })
+      setPhaseSync(passed ? 'success' : 'confirmed-no-delta')
+    } catch {
+      // Verification failed  leave phase as-is
+    } finally {
+      setVerifying(false)
+    }
+  }
+
+  //  Max button 
 
   function handleMax() {
     if (!balanceIn) return
@@ -646,7 +784,7 @@ export default function CircleSwapBox() {
     resetForm()
   }
 
-  // ─── Validation ─────────────────────────────────────────────────────────────
+  //  Validation 
 
   function getValidationError(): string | null {
     if (!isConnected) return 'Wallet not connected.'
@@ -660,7 +798,7 @@ export default function CircleSwapBox() {
   const validationError = getValidationError()
   const canOpenModal = validationError === null && !isActive
 
-  // ─── Reset ──────────────────────────────────────────────────────────────────
+  //  Reset 
 
   function setPhaseSync(p: Phase) {
     phaseRef.current = p
@@ -672,11 +810,10 @@ export default function CircleSwapBox() {
     setApproveTxHash(null)
     setSwapTxHash(null)
     setEstimatedOut(null)
+    setVerification(null)
     setBalanceStale(false)
     setPhaseSync('idle')
   }
-
-  // ─── Open modal ─────────────────────────────────────────────────────────────
 
   function handleSwapButtonClick() {
     if (!canOpenModal) return
@@ -687,7 +824,7 @@ export default function CircleSwapBox() {
     setShowModal(false)
   }
 
-  // ─── Confirmed swap — called ONLY from modal confirm button ─────────────────
+  //  Confirmed swap 
 
   async function handleConfirmedSwap() {
     if (isSwappingRef.current) return
@@ -699,26 +836,26 @@ export default function CircleSwapBox() {
     setPhaseSync('preparing')
 
     try {
-      // Step 1: Get EVM payload from server proxy
+      // Step 1: Snapshot pre-swap balances (raw bigint)
+      const [rawInBefore, rawOutBefore] = await Promise.all([
+        readRawBalance(tokenIn),
+        readRawBalance(tokenOut),
+      ])
+      const snapshot: BalanceSnapshot = { rawIn: rawInBefore, rawOut: rawOutBefore }
+      snapshotRef.current = snapshot
+
+      // Step 2: Get EVM payload from server proxy
       const res = await fetch('/api/circle/swap', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          tokenIn, tokenOut, amountIn,
-          fromAddress: address, toAddress: address,
-          chain: 'Arc_Testnet',
-        }),
+        body: JSON.stringify({ tokenIn, tokenOut, amountIn, fromAddress: address, toAddress: address, chain: 'Arc_Testnet' }),
       })
 
       const data: ProxyResponse = await res.json()
 
       if (!res.ok || !data.ok) {
         const msg = data.error ?? `Server error ${res.status}`
-        throw new Error(
-          isUnsupportedPairError(msg)
-            ? 'This token pair is not currently supported on Arc Testnet.'
-            : msg
-        )
+        throw new Error(isUnsupportedPairError(msg) ? 'This token pair is not currently supported on Arc Testnet.' : msg)
       }
 
       setEstimatedOut(data.estimatedAmountFormatted ?? null)
@@ -728,17 +865,15 @@ export default function CircleSwapBox() {
         throw new Error('Circle returned an empty transaction payload.')
       }
 
-      // Only process the first instruction (same-chain swap = one instruction)
       const instruction = tx.executionParams.instructions[0]
       const { target, data: calldata, value: hexValue, tokenIn: instrTokenIn, amountToApprove } = instruction
 
-      // Step 2: Check allowance — approve only if needed
+      // Step 3: Approve if needed
       const requiredAmount = amountToApprove ? BigInt(amountToApprove) : BigInt(0)
       let finalApproveTxHash: string | null = null
 
       if (instrTokenIn && requiredAmount > BigInt(0)) {
         setPhaseSync('checking-allowance')
-
         let currentAllowance = BigInt(0)
         try {
           const result = await publicClient.readContract({
@@ -754,20 +889,17 @@ export default function CircleSwapBox() {
 
         if (currentAllowance < requiredAmount) {
           setPhaseSync('waiting-approval')
-
           const approveData = encodeFunctionData({
             abi: ERC20_ABI,
             functionName: 'approve',
             args: [target as `0x${string}`, requiredAmount],
           })
-
           const approveTx = await walletClient.sendTransaction({
             to: instrTokenIn as `0x${string}`,
             data: approveData,
             account: address,
             chain: walletClient.chain,
           })
-
           finalApproveTxHash = approveTx
           setApproveTxHash(approveTx)
           await publicClient.waitForTransactionReceipt({ hash: approveTx })
@@ -775,11 +907,9 @@ export default function CircleSwapBox() {
         }
       }
 
-      // Step 3: Execute swap
+      // Step 4: Execute swap
       setPhaseSync('waiting-swap')
-
       const txValue = hexValue && hexValue !== '0x' ? BigInt(hexValue) : BigInt(0)
-
       const finalTxHash = await walletClient.sendTransaction({
         to: target as `0x${string}`,
         data: calldata as `0x${string}`,
@@ -789,26 +919,38 @@ export default function CircleSwapBox() {
       })
 
       setSwapTxHash(finalTxHash)
+      lastSwapTxRef.current = finalTxHash
       await publicClient.waitForTransactionReceipt({ hash: finalTxHash })
-      setPhaseSync('success')
 
-      // Step 4: Record in history — store the formatted decimal string, not raw base units
-      addEntry({
-        timestamp: Date.now(),
-        chainId: ARC_TESTNET_CHAIN_ID,
-        tokenIn, tokenOut, amountIn,
-        estimatedOut: data.estimatedAmountFormatted ?? null,
-        approveTxHash: finalApproveTxHash,
-        swapTxHash: finalTxHash,
+      // Step 5: Verify  wait for RPC indexing then check balance deltas + Transfer events
+      setPhaseSync('verifying')
+      await new Promise((resolve) => setTimeout(resolve, 1500))
+
+      const { result, passed } = await verifySwap(finalTxHash, snapshot, tokenIn, tokenOut)
+      setVerification(result)
+
+      // Update displayed balances from verification
+      startTransition(() => {
+        setBalanceIn(result.balanceInFormatted)
+        setBalanceOut(result.balanceOutFormatted)
       })
 
-      // Step 5: Refresh both balances after a short delay.
-      // The RPC may lag briefly after receipt confirmation, so we wait 1.5 s
-      // before reading. If the read still returns stale data, the stale hint
-      // is shown and the user can click "Refresh balances" manually.
-      setBalanceStale(true)
-      await new Promise((resolve) => setTimeout(resolve, 1500))
-      await fetchBalances(tokenIn, tokenOut)
+      setPhaseSync(passed ? 'success' : 'confirmed-no-delta')
+
+      // Step 6: Record in history only if verification passed
+      if (passed) {
+        addEntry({
+          timestamp: Date.now(),
+          chainId: ARC_TESTNET_CHAIN_ID,
+          tokenIn, tokenOut, amountIn,
+          estimatedOut: result.deltaOut > BigInt(0)
+            ? result.deltaOutFormatted
+            : (data.estimatedAmountFormatted ?? null),
+          approveTxHash: finalApproveTxHash,
+          swapTxHash: finalTxHash,
+        })
+      }
+
       setBalanceStale(false)
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'An unexpected error occurred.'
@@ -826,46 +968,27 @@ export default function CircleSwapBox() {
   }
 
   const isDev = process.env.NODE_ENV === 'development'
-
-  // ─── Render ─────────────────────────────────────────────────────────────────
+  const showResult = phase === 'success' || phase === 'confirmed-no-delta'
 
   return (
     <>
       {showModal && address && (
-        <ReviewModal
-          tokenIn={tokenIn}
-          tokenOut={tokenOut}
-          amountIn={amountIn}
-          address={address}
-          onConfirm={handleConfirmedSwap}
-          onCancel={handleModalCancel}
-        />
+        <ReviewModal tokenIn={tokenIn} tokenOut={tokenOut} amountIn={amountIn} address={address} onConfirm={handleConfirmedSwap} onCancel={handleModalCancel} />
       )}
 
       <div className="flex flex-col items-center w-full max-w-md">
-        {/* Swap card */}
         <div className="w-full relative overflow-hidden rounded-3xl border border-white/[0.08] bg-[#111318] shadow-2xl shadow-black/60">
-          <div
-            className="pointer-events-none absolute inset-x-0 top-0 h-px"
-            style={{ background: 'linear-gradient(90deg, transparent, rgba(59,130,246,0.5) 40%, rgba(99,102,241,0.5) 60%, transparent)' }}
-            aria-hidden="true"
-          />
+          <div className="pointer-events-none absolute inset-x-0 top-0 h-px" style={{ background: 'linear-gradient(90deg, transparent, rgba(59,130,246,0.5) 40%, rgba(99,102,241,0.5) 60%, transparent)' }} aria-hidden="true" />
 
           <div className="p-5">
-            {/* Header */}
             <div className="mb-5 flex items-center justify-between">
               <h2 className="text-base font-semibold text-white">Swap</h2>
-              <span className="rounded-full border border-blue-500/30 bg-blue-500/10 px-2.5 py-0.5 text-xs font-medium text-blue-400">
-                Arc Testnet
-              </span>
+              <span className="rounded-full border border-blue-500/30 bg-blue-500/10 px-2.5 py-0.5 text-xs font-medium text-blue-400">Arc Testnet</span>
             </div>
 
-            {/* Kit key banners */}
             {kitKeyMissing && (
               <div className="mb-4 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3">
-                <p className="text-xs font-semibold text-amber-400">
-                  Missing <code className="font-mono">NEXT_PUBLIC_CIRCLE_KIT_KEY</code>
-                </p>
+                <p className="text-xs font-semibold text-amber-400">Missing <code className="font-mono">NEXT_PUBLIC_CIRCLE_KIT_KEY</code></p>
                 <p className="mt-1 text-xs text-amber-300/80">Add it in Vercel Environment Variables and redeploy.</p>
               </div>
             )}
@@ -876,7 +999,6 @@ export default function CircleSwapBox() {
               </div>
             )}
 
-            {/* Connect wallet */}
             {!isConnected && (
               <div className="mb-4 flex flex-col items-center gap-3 rounded-2xl border border-white/[0.06] bg-white/[0.02] p-4">
                 <p className="text-sm text-white/50">Connect your wallet to swap</p>
@@ -884,70 +1006,27 @@ export default function CircleSwapBox() {
               </div>
             )}
 
-            {/* Wrong chain */}
             {isConnected && chainId !== ARC_TESTNET_CHAIN_ID && (
               <div className="mb-4 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3">
                 <p className="mb-2 text-xs text-amber-400">Switch to Arc Testnet to continue.</p>
-                <button
-                  type="button"
-                  onClick={() => switchChain({ chainId: ARC_TESTNET_CHAIN_ID })}
-                  disabled={isSwitching}
-                  className="flex items-center gap-2 rounded-lg bg-amber-500/20 px-3 py-1.5 text-xs font-semibold text-amber-300 transition-colors hover:bg-amber-500/30 disabled:cursor-not-allowed disabled:opacity-50"
-                >
+                <button type="button" onClick={() => switchChain({ chainId: ARC_TESTNET_CHAIN_ID })} disabled={isSwitching} className="flex items-center gap-2 rounded-lg bg-amber-500/20 px-3 py-1.5 text-xs font-semibold text-amber-300 transition-colors hover:bg-amber-500/30 disabled:cursor-not-allowed disabled:opacity-50">
                   {isSwitching && <Spinner />}
                   Switch to Arc Testnet
                 </button>
               </div>
             )}
 
-            {/* Form */}
             <div className="flex flex-col gap-4">
               <div className="grid grid-cols-2 gap-3">
-                <TokenSelect
-                  label="From"
-                  value={tokenIn}
-                  onChange={(v) => { setTokenIn(v); resetForm() }}
-                  exclude={tokenOut}
-                  disabled={isActive}
-                  balance={isConnected && chainId === ARC_TESTNET_CHAIN_ID ? balanceIn : undefined}
-                  balanceLoading={balanceLoading}
-                  onMax={isConnected && chainId === ARC_TESTNET_CHAIN_ID ? handleMax : undefined}
-                />
-                <TokenSelect
-                  label="To"
-                  value={tokenOut}
-                  onChange={(v) => { setTokenOut(v); resetForm() }}
-                  exclude={tokenIn}
-                  disabled={isActive}
-                  balance={isConnected && chainId === ARC_TESTNET_CHAIN_ID ? balanceOut : undefined}
-                  balanceLoading={balanceLoading}
-                />
+                <TokenSelect label="From" value={tokenIn} onChange={(v) => { setTokenIn(v); resetForm() }} exclude={tokenOut} disabled={isActive} balance={isConnected && chainId === ARC_TESTNET_CHAIN_ID ? balanceIn : undefined} balanceLoading={balanceLoading} onMax={isConnected && chainId === ARC_TESTNET_CHAIN_ID ? handleMax : undefined} />
+                <TokenSelect label="To" value={tokenOut} onChange={(v) => { setTokenOut(v); resetForm() }} exclude={tokenIn} disabled={isActive} balance={isConnected && chainId === ARC_TESTNET_CHAIN_ID ? balanceOut : undefined} balanceLoading={balanceLoading} />
               </div>
 
               <div className="flex flex-col gap-1">
-                <label
-                  htmlFor="circle-amount-in"
-                  className="text-xs font-medium uppercase tracking-wider text-white/40"
-                >
-                  Amount
-                </label>
-                <input
-                  id="circle-amount-in"
-                  type="number"
-                  inputMode="decimal"
-                  placeholder="0.00"
-                  value={amountIn}
-                  onChange={(e) => { setAmountIn(e.target.value); resetForm() }}
-                  onKeyDown={(e) => { if (e.key === 'Enter') e.preventDefault() }}
-                  disabled={isActive}
-                  min="0"
-                  step="any"
-                  aria-label={`Amount of ${tokenIn} to swap`}
-                  className="rounded-xl border border-white/[0.08] bg-white/[0.03] px-4 py-3 text-xl font-semibold text-white outline-none placeholder:text-white/20 transition-colors hover:border-white/[0.14] focus:border-blue-500/50 focus:bg-white/[0.05] disabled:cursor-not-allowed disabled:opacity-50 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
-                />
+                <label htmlFor="circle-amount-in" className="text-xs font-medium uppercase tracking-wider text-white/40">Amount</label>
+                <input id="circle-amount-in" type="number" inputMode="decimal" placeholder="0.00" value={amountIn} onChange={(e) => { setAmountIn(e.target.value); resetForm() }} onKeyDown={(e) => { if (e.key === 'Enter') e.preventDefault() }} disabled={isActive} min="0" step="any" aria-label={`Amount of ${tokenIn} to swap`} className="rounded-xl border border-white/[0.08] bg-white/[0.03] px-4 py-3 text-xl font-semibold text-white outline-none placeholder:text-white/20 transition-colors hover:border-white/[0.14] focus:border-blue-500/50 focus:bg-white/[0.05] disabled:cursor-not-allowed disabled:opacity-50 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none" />
               </div>
 
-              {/* Phase indicator */}
               {isActive && PHASE_LABELS[phase] && (
                 <div className="flex items-center gap-2 rounded-xl border border-white/[0.06] bg-white/[0.02] px-4 py-2.5">
                   <Spinner />
@@ -955,119 +1034,69 @@ export default function CircleSwapBox() {
                 </div>
               )}
 
-              {/* Stale balance hint + manual refresh */}
               {!isActive && isConnected && chainId === ARC_TESTNET_CHAIN_ID && (
                 <div className="flex items-center justify-between">
-                  {balanceStale && (
-                    <p className="text-xs text-white/30">
-                      Swap confirmed. Balance may take a few seconds to update.
-                    </p>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => fetchBalances(tokenIn, tokenOut)}
-                    disabled={balanceLoading}
-                    className="ml-auto flex items-center gap-1.5 text-xs text-white/25 transition-colors hover:text-white/50 disabled:opacity-30"
-                    aria-label="Refresh balances"
-                  >
-                    <svg className={`h-3 w-3 ${balanceLoading ? 'animate-spin' : ''}`} viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                      <path fillRule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clipRule="evenodd" />
-                    </svg>
+                  {balanceStale && <p className="text-xs text-white/30">Swap confirmed. Balance may take a few seconds to update.</p>}
+                  <button type="button" onClick={() => fetchBalances(tokenIn, tokenOut)} disabled={balanceLoading} className="ml-auto flex items-center gap-1.5 text-xs text-white/25 transition-colors hover:text-white/50 disabled:opacity-30" aria-label="Refresh balances">
+                    <svg className={`h-3 w-3 ${balanceLoading ? 'animate-spin' : ''}`} viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fillRule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clipRule="evenodd" /></svg>
                     Refresh
                   </button>
                 </div>
               )}
 
-              {/* Swap button */}
-              <button
-                type="button"
-                onClick={handleSwapButtonClick}
-                disabled={!canOpenModal}
-                aria-label={`Swap ${tokenIn} for ${tokenOut}`}
-                className={`w-full rounded-2xl py-4 text-base font-semibold tracking-wide transition-all duration-200 ${
-                  canOpenModal
-                    ? 'bg-gradient-to-r from-blue-500 to-indigo-600 text-white shadow-lg shadow-blue-500/25 hover:from-blue-400 hover:to-indigo-500 hover:shadow-blue-500/40 active:scale-[0.98]'
-                    : 'cursor-not-allowed bg-white/[0.06] text-white/25'
-                }`}
-              >
+              <button type="button" onClick={handleSwapButtonClick} disabled={!canOpenModal} aria-label={`Swap ${tokenIn} for ${tokenOut}`} className={`w-full rounded-2xl py-4 text-base font-semibold tracking-wide transition-all duration-200 ${canOpenModal ? 'bg-gradient-to-r from-blue-500 to-indigo-600 text-white shadow-lg shadow-blue-500/25 hover:from-blue-400 hover:to-indigo-500 hover:shadow-blue-500/40 active:scale-[0.98]' : 'cursor-not-allowed bg-white/[0.06] text-white/25'}`}>
                 {isActive ? (
                   <span className="flex items-center justify-center gap-2">
                     <Spinner />
-                    {phase === 'preparing' || phase === 'checking-allowance'
-                      ? 'Preparing\u2026'
-                      : phase === 'waiting-approval'
-                        ? 'Approve in wallet\u2026'
-                        : phase === 'approval-confirmed'
-                          ? 'Approved\u2026'
-                          : 'Confirm in wallet\u2026'}
+                    {phase === 'preparing' || phase === 'checking-allowance' ? 'Preparing\u2026' : phase === 'waiting-approval' ? 'Approve in wallet\u2026' : phase === 'approval-confirmed' ? 'Approved\u2026' : phase === 'verifying' ? 'Verifying\u2026' : 'Confirm in wallet\u2026'}
                   </span>
-                ) : (
-                  `Swap ${tokenIn} \u2192 ${tokenOut}`
-                )}
+                ) : `Swap ${tokenIn} \u2192 ${tokenOut}`}
               </button>
 
-              {/* Validation hint */}
               {validationError && !error && isConnected && chainId === ARC_TESTNET_CHAIN_ID && (
                 <p className="text-center text-xs text-white/30">{validationError}</p>
               )}
             </div>
 
-            {/* Error */}
             {phase === 'error' && error && (
               <div className="mt-4 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3">
-                <p className="text-xs font-semibold text-red-400">
-                  {error.includes('rejected') || error.includes('not currently supported')
-                    ? error
-                    : 'Swap failed'}
-                </p>
-                {!error.includes('rejected') && !error.includes('not currently supported') && (
-                  <p className="mt-1 text-xs text-red-300/70">{error}</p>
-                )}
+                <p className="text-xs font-semibold text-red-400">{error.includes('rejected') || error.includes('not currently supported') ? error : 'Swap failed'}</p>
+                {!error.includes('rejected') && !error.includes('not currently supported') && <p className="mt-1 text-xs text-red-300/70">{error}</p>}
               </div>
             )}
 
-            {/* Success */}
-            {phase === 'success' && swapTxHash && (
-              <SuccessCard
+            {showResult && swapTxHash && (
+              <ResultCard
+                phase={phase}
                 tokenIn={tokenIn}
                 tokenOut={tokenOut}
                 amountIn={amountIn}
                 estimatedOut={estimatedOut}
                 approveTxHash={approveTxHash}
                 swapTxHash={swapTxHash}
-                balanceIn={balanceIn}
-                balanceOut={balanceOut}
+                verification={verification}
+                onVerify={handleVerify}
+                verifying={verifying}
               />
             )}
 
-            {/* Dev debug */}
             {isDev && (
               <details className="mt-4">
-                <summary className="cursor-pointer text-xs text-white/20 hover:text-white/40">
-                  Debug (dev only)
-                </summary>
+                <summary className="cursor-pointer text-xs text-white/20 hover:text-white/40">Debug (dev only)</summary>
                 <pre className="mt-2 rounded-lg bg-white/[0.03] p-3 text-[10px] text-white/40 overflow-auto max-h-48">
-                  {JSON.stringify({ address, chainId, tokenIn, tokenOut, amountIn, phase, balanceIn, balanceOut, approveTxHash, swapTxHash, error }, null, 2)}
+                  {JSON.stringify({ address, chainId, tokenIn, tokenOut, amountIn, phase, balanceIn, balanceOut, approveTxHash, swapTxHash, error, verification: verification ? { deltaIn: verification.deltaIn.toString(), deltaOut: verification.deltaOut.toString(), transfersDetected: verification.transfersDetected } : null }, null, 2)}
                 </pre>
               </details>
             )}
           </div>
         </div>
 
-        {/* Recent swaps */}
         <RecentSwaps history={history} onClear={clearHistory} />
 
         <p className="mt-6 text-center text-xs text-white/20">
           Powered by{' '}
-          <a
-            href="https://developers.circle.com"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-white/30 underline-offset-2 hover:text-white/50 hover:underline"
-          >
-            Circle Swap Kit
-          </a>{' '}
-          &middot; Arc Testnet only
+          <a href="https://developers.circle.com" target="_blank" rel="noopener noreferrer" className="text-white/30 underline-offset-2 hover:text-white/50 hover:underline">Circle Swap Kit</a>
+          {' '}&middot; Arc Testnet only
         </p>
       </div>
     </>
