@@ -63,6 +63,26 @@ function isPositiveNumberString(v: unknown): v is string {
   return isFinite(n) && n > 0
 }
 
+function parseDecimalToBaseUnits(value: string, decimals: number): string {
+  const trimmed = value.trim()
+  if (!/^\d+(\.\d+)?$/.test(trimmed)) {
+    throw new Error('Invalid decimal amount')
+  }
+
+  const [wholePart, fractionalPart = ''] = trimmed.split('.')
+  if (fractionalPart.length > decimals) {
+    throw new Error('Too many decimal places')
+  }
+
+  const paddedFraction = fractionalPart.padEnd(decimals, '0')
+  const raw = BigInt(wholePart || '0') * BigInt(10) ** BigInt(decimals) + BigInt(paddedFraction || '0')
+  if (raw <= BigInt(0)) {
+    throw new Error('Amount rounds to zero')
+  }
+
+  return raw.toString()
+}
+
 // ─── Route handler ────────────────────────────────────────────────────────────
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
@@ -188,10 +208,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
   let amountBaseUnits: string
   try {
-    const parsed = parseFloat(amountIn as string)
-    const raw = BigInt(Math.round(parsed * 10 ** decimals))
-    if (raw <= BigInt(0)) throw new Error('Amount rounds to zero')
-    amountBaseUnits = raw.toString()
+    amountBaseUnits = parseDecimalToBaseUnits(amountIn as string, decimals)
   } catch {
     return NextResponse.json(
       { error: 'amountIn could not be converted to base units.' },
@@ -289,9 +306,14 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     ok: true,
     tokenIn,
     tokenOut,
+    tokenInAddress:    d.tokenInAddress ?? tokenInAddress,
+    tokenInChain:      d.tokenInChain ?? resolvedChain,
+    tokenOutAddress:   d.tokenOutAddress ?? tokenOutAddress,
+    tokenOutChain:     d.tokenOutChain ?? resolvedChain,
     tokenOutDecimals,
     amountIn: amountIn as string,
-    amountBaseUnits,
+    amount: d.amount ?? amountBaseUnits,                 // Circle's source-of-truth input amount
+    amountBaseUnits,                                      // request amount, kept for display/debug
     estimatedAmount: d.estimatedAmount ?? null,          // raw base units (kept for reference)
     estimatedAmountFormatted,                             // human-readable decimal string
     stopLimit:       d.stopLimit ?? null,

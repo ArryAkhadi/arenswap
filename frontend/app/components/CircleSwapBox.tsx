@@ -33,6 +33,7 @@ import type { SwapHistoryEntry } from '@/app/hooks/useSwapHistory'
 const ARC_TESTNET_CHAIN_ID = 5042002
 const ARC_TESTNET_EXPLORER = 'https://testnet.arcscan.app'
 const ARC_TESTNET_NAME = 'Arc Testnet'
+const NATIVE_TOKEN_ADDRESS = '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE'
 
 const SUPPORTED_TOKENS = ['USDC', 'EURC', 'cirBTC'] as const
 type SupportedToken = (typeof SUPPORTED_TOKENS)[number]
@@ -217,8 +218,13 @@ interface ProxyResponse {
   ok: boolean
   tokenIn: string
   tokenOut: string
+  tokenInAddress: string
+  tokenInChain: string
+  tokenOutAddress: string
+  tokenOutChain: string
   tokenOutDecimals: number
   amountIn: string
+  amount: string
   amountBaseUnits: string
   estimatedAmount: string | null
   estimatedAmountFormatted: string | null
@@ -664,13 +670,6 @@ export default function CircleSwapBox() {
     phase === 'waiting-swap' ||
     phase === 'verifying'
 
-  const publicKitKey = process.env.NEXT_PUBLIC_CIRCLE_KIT_KEY
-  const kitKeyMissing = publicKitKey !== undefined && publicKitKey === ''
-  const kitKeyInvalidFormat =
-    publicKitKey !== undefined &&
-    publicKitKey !== '' &&
-    !publicKitKey.startsWith('KIT_KEY:')
-
   //  Read raw bigint balance for a single token 
 
   async function readRawBalance(token: SupportedToken): Promise<bigint> {
@@ -987,29 +986,22 @@ export default function CircleSwapBox() {
         throw new Error('Circle returned an empty transaction payload.')
       }
 
-      const instruction = tx.executionParams.instructions[0]
-      const { tokenIn: instrTokenIn, amountToApprove } = instruction
+      const tokenInAddress = data.tokenInAddress
+      const inputAmount = BigInt(data.amount ?? data.amountBaseUnits)
+      const isNativeInput = tokenInAddress.toLowerCase() === NATIVE_TOKEN_ADDRESS.toLowerCase()
 
       // Step 3: ERC-20 approval for the Adapter Contract.
-      //
-      // On Arc Testnet, USDC is represented as an ERC-20 token at 0x3600...
-      // (not as native currency). ALL tokens (USDC, EURC, cirBTC) require
-      // ERC-20 approval to the Adapter Contract before the swap.
-      //
-      // The SDK's handleEvmTokenApproval skips approval only for:
-      //   - Native tokens (0xEeee...EeEe) — not applicable on Arc
-      //   - EIP-2612 permit tokens — we use the 'approve' strategy instead
-      //
-      // instrTokenIn from Circle's payload is the ERC-20 token address.
-      const requiredAmount = amountToApprove ? BigInt(amountToApprove) : BigInt(0)
+      // Use Circle's top-level amount as the wallet approval amount. Nested
+      // instruction.amountToApprove values are for adapter-to-router approvals.
+      const requiredAmount = isNativeInput ? BigInt(0) : inputAmount
       let finalApproveTxHash: string | null = null
 
-      if (instrTokenIn && requiredAmount > BigInt(0)) {
+      if (!isNativeInput && tokenInAddress && requiredAmount > BigInt(0)) {
         setPhaseSync('checking-allowance')
         let currentAllowance = BigInt(0)
         try {
           const result = await publicClient.readContract({
-            address: instrTokenIn as `0x${string}`,
+            address: tokenInAddress as `0x${string}`,
             abi: ERC20_ABI,
             functionName: 'allowance',
             args: [address, ADAPTER_CONTRACT],
@@ -1027,7 +1019,7 @@ export default function CircleSwapBox() {
             args: [ADAPTER_CONTRACT, requiredAmount],
           })
           const approveTx = await walletClient.sendTransaction({
-            to: instrTokenIn as `0x${string}`,
+            to: tokenInAddress as `0x${string}`,
             data: approveData,
             account: address,
             chain: walletClient.chain,
@@ -1048,13 +1040,8 @@ export default function CircleSwapBox() {
       // tokenInputs:   tells the adapter which token to pull and how much
       //                (PermitType.NONE = pre-approved via ERC-20 approve above)
       // signature:     Circle's server-signed authorization
-      // value:         0 — all tokens on Arc are ERC-20, not native currency
-      //
-      // USDC on Arc is at 0x3600... (ERC-20, 6 decimals).
-      // The native gas token is also USDC but the swap uses the ERC-20 path.
+      // value:         native input value when Circle's payload requires it
       setPhaseSync('waiting-swap')
-
-      const inputAmount = BigInt(data.amountBaseUnits)
 
       // Build executeParams struct from Circle's response
       const executeParams = {
@@ -1076,15 +1063,23 @@ export default function CircleSwapBox() {
         metadata: tx.executionParams.metadata as `0x${string}`,
       }
 
+      const totalInstructionValue = executeParams.instructions.reduce(
+        (sum, instr) => sum + instr.value,
+        BigInt(0),
+      )
+      const txValue = totalInstructionValue > BigInt(0)
+        ? totalInstructionValue
+        : isNativeInput
+          ? inputAmount
+          : BigInt(0)
+
       // tokenInputs: PermitType.NONE (0) = use pre-approved ERC-20 allowance.
-      // This matches the SDK's 'approve' allowanceStrategy path.
-      // The adapter reads the token from the user's wallet using the allowance
-      // granted in Step 3.
-      const tokenInputs = instrTokenIn
+      // Native inputs are sent as msg.value, so they do not have a token input.
+      const tokenInputs = !isNativeInput && tokenInAddress
         ? [
             {
-              permitType:     0,                                    // PermitType.NONE
-              token:          instrTokenIn as `0x${string}`,
+              permitType:     0,
+              token:          tokenInAddress as `0x${string}`,
               amount:         inputAmount,
               permitCalldata: '0x' as `0x${string}`,
             },
@@ -1096,14 +1091,16 @@ export default function CircleSwapBox() {
       if (process.env.NODE_ENV === 'development') {
         console.log('[swap] Adapter execute() call:', {
           to: ADAPTER_CONTRACT,
-          value: '0',
+          value: txValue.toString(),
           tokenIn,
           tokenOut,
           amountIn,
+          circleAmount: data.amount,
           amountBaseUnits: data.amountBaseUnits,
-          instrTokenIn,
+          tokenInAddress,
           requiredAmount: requiredAmount.toString(),
           tokenInputsCount: tokenInputs.length,
+          gasLimit: tx.gasLimit,
           execId: tx.executionParams.execId,
           deadline: tx.executionParams.deadline,
           instructionCount: tx.executionParams.instructions.length,
@@ -1120,7 +1117,8 @@ export default function CircleSwapBox() {
       const finalTxHash = await walletClient.sendTransaction({
         to: ADAPTER_CONTRACT,
         data: adapterCalldata,
-        value: BigInt(0),   // ERC-20 path — no native value needed
+        value: txValue,
+        gas: tx.gasLimit ? BigInt(tx.gasLimit) : undefined,
         account: address,
         chain: walletClient.chain,
       })
@@ -1193,19 +1191,6 @@ export default function CircleSwapBox() {
               <h2 className="text-base font-semibold text-white">Swap</h2>
               <span className="rounded-full border border-blue-500/30 bg-blue-500/10 px-2.5 py-0.5 text-xs font-medium text-blue-400">Arc Testnet</span>
             </div>
-
-            {kitKeyMissing && (
-              <div className="mb-4 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3">
-                <p className="text-xs font-semibold text-amber-400">Missing <code className="font-mono">NEXT_PUBLIC_CIRCLE_KIT_KEY</code></p>
-                <p className="mt-1 text-xs text-amber-300/80">Add it in Vercel Environment Variables and redeploy.</p>
-              </div>
-            )}
-            {kitKeyInvalidFormat && (
-              <div className="mb-4 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3">
-                <p className="text-xs font-semibold text-red-400">Invalid Circle Kit Key format</p>
-                <p className="mt-1 text-xs text-red-300/80">Expected: KIT_KEY:&#123;keyId&#125;:&#123;keySecret&#125;</p>
-              </div>
-            )}
 
             {!isConnected && (
               <div className="mb-4 flex flex-col items-center gap-3 rounded-2xl border border-white/[0.06] bg-white/[0.02] p-4">
