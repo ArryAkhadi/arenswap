@@ -30,12 +30,12 @@ import { NextRequest, NextResponse } from 'next/server'
 const CIRCLE_API_BASE = 'https://api.circle.com'
 const CIRCLE_SWAP_URL = `${CIRCLE_API_BASE}/v1/stablecoinKits/swap`
 
-// Arc Testnet token addresses (canonical, from Circle chain definition)
+// Arc Testnet token addresses (canonical, from Circle SDK token registry)
 const TOKEN_ADDRESSES: Record<string, string> = {
   USDC:   '0x3600000000000000000000000000000000000000',
   EURC:   '0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a',
-  // cirBTC address on Arc Testnet — update when Circle publishes it
-  cirBTC: '0x0000000000000000000000000000000000000001',
+  // cirBTC address from Circle SDK (CIRBTC.locators[Blockchain.Arc_Testnet])
+  cirBTC: '0xf0C4a4CE82A5746AbAAd9425360Ab04fbBA432BF',
 }
 
 const TOKEN_DECIMALS: Record<string, number> = {
@@ -164,7 +164,27 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   // ── 4. Resolve token addresses and convert amount to base units ───────────
   const tokenInAddress  = TOKEN_ADDRESSES[tokenIn]
   const tokenOutAddress = TOKEN_ADDRESSES[tokenOut]
-  const decimals        = TOKEN_DECIMALS[tokenIn] ?? 6
+
+  // Guard: reject any zero or placeholder address — prevents sending invalid
+  // transactions if a token entry was accidentally left as a stub.
+  const ZERO_ADDRESSES = new Set([
+    '0x0000000000000000000000000000000000000000',
+    '0x0000000000000000000000000000000000000001',
+  ])
+  if (!tokenInAddress || ZERO_ADDRESSES.has(tokenInAddress)) {
+    return NextResponse.json(
+      { error: `${tokenIn} is not enabled yet because the app does not have an official Arc Testnet token address.` },
+      { status: 400 },
+    )
+  }
+  if (!tokenOutAddress || ZERO_ADDRESSES.has(tokenOutAddress)) {
+    return NextResponse.json(
+      { error: `${tokenOut} is not enabled yet because the app does not have an official Arc Testnet token address.` },
+      { status: 400 },
+    )
+  }
+
+  const decimals = TOKEN_DECIMALS[tokenIn] ?? 6
 
   let amountBaseUnits: string
   try {
