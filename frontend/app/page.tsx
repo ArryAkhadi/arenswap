@@ -5,7 +5,7 @@ import TransactionDashboard from '@/app/components/TransactionDashboard'
 
 function Navbar() {
   return (
-    <header className="sticky top-0 z-50 w-full border-b border-white/[0.06] bg-[#0a0b0f]/80 backdrop-blur-md">
+    <header className="sticky top-0 z-50 w-full border-b border-white/[0.07] bg-[#080a10]/75 backdrop-blur-xl">
       <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4 sm:px-6">
         <div className="flex items-center gap-2.5">
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-blue-500 to-indigo-600 shadow-lg shadow-blue-500/25">
@@ -39,11 +39,23 @@ function Navbar() {
 
 export default function Home() {
   return (
-    <div className="flex min-h-screen flex-col bg-[#0a0b0f]">
+    <div className="relative flex min-h-screen flex-col overflow-x-hidden bg-[#080a10]">
       <div
         className="pointer-events-none fixed inset-0 z-0"
         aria-hidden="true"
-        style={{ background: 'radial-gradient(ellipse 80% 50% at 50% -10%, rgba(59,130,246,0.12) 0%, transparent 70%)' }}
+        style={{
+          background:
+            'radial-gradient(ellipse 70% 38% at 50% -8%, rgba(59,130,246,0.18) 0%, rgba(59,130,246,0.06) 42%, transparent 76%), radial-gradient(ellipse 42% 32% at 78% 12%, rgba(99,102,241,0.14) 0%, transparent 72%), radial-gradient(ellipse 56% 34% at 50% 92%, rgba(79,70,229,0.10) 0%, transparent 72%), linear-gradient(180deg, #090b12 0%, #080a10 52%, #07080d 100%)',
+        }}
+      />
+      <div
+        className="pointer-events-none fixed inset-0 z-0 opacity-[0.035]"
+        aria-hidden="true"
+        style={{
+          backgroundImage: 'linear-gradient(rgba(255,255,255,0.9) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.9) 1px, transparent 1px)',
+          backgroundSize: '48px 48px',
+          maskImage: 'linear-gradient(to bottom, black, transparent 70%)',
+        }}
       />
 
       <Navbar />
@@ -64,7 +76,7 @@ export default function Home() {
         <TransactionDashboard />
       </main>
 
-      <footer className="relative z-10 border-t border-white/[0.04] py-6">
+      <footer className="relative z-10 border-t border-white/[0.05] py-6">
         <p className="text-center text-xs text-white/20">
           Built on{' '}
           <a href="https://docs.arc.io" target="_blank" rel="noopener noreferrer" className="text-white/30 underline-offset-2 hover:text-white/50 hover:underline">
