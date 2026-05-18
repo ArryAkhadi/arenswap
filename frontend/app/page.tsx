@@ -1,22 +1,23 @@
 'use client'
 
 import { ConnectButton } from '@rainbow-me/rainbowkit'
+import Link from 'next/link'
 import TransactionDashboard from '@/app/components/TransactionDashboard'
+
+const BRAND_LOGO_URL = process.env.NEXT_PUBLIC_BRAND_LOGO_URL?.trim() || '/brand/arenswap-logo.png'
 
 function Navbar() {
   return (
     <header className="sticky top-0 z-50 w-full border-b border-white/[0.07] bg-[#080a10]/75 backdrop-blur-xl">
       <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4 sm:px-6">
-        <div className="flex items-center gap-2.5">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-blue-500 to-indigo-600 shadow-lg shadow-blue-500/25">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-              <path d="M7 16l5-8 5 8M9.5 12h5" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-          </div>
-          <span className="text-lg font-semibold tracking-tight text-white">
-            Aren<span className="text-blue-400">swap</span>
-          </span>
-        </div>
+        <Link href="/" className="flex min-w-0 items-center" aria-label="Arenswap home">
+          {/* eslint-disable-next-line @next/next/no-img-element -- Supports optional external public logo URLs without remote image config. */}
+          <img
+            src={BRAND_LOGO_URL}
+            alt="Arenswap"
+            className="h-8 w-auto max-w-[132px] object-contain sm:h-9 sm:max-w-[164px]"
+          />
+        </Link>
         <div className="flex items-center gap-3">
           <div className="hidden items-center gap-1.5 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-3 py-1 sm:flex">
             <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" />
