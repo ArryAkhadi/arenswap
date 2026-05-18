@@ -7,16 +7,16 @@ import TransactionDashboard from '@/app/components/TransactionDashboard'
 function Navbar() {
   return (
     <header className="sticky top-0 z-50 w-full border-b border-white/[0.07] bg-[#080a10]/75 backdrop-blur-xl">
-      <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4 sm:px-6">
-        <Link href="/" className="flex min-w-0 items-center gap-2.5" aria-label="Arenswap home">
+      <div className="mx-auto flex min-h-16 max-w-6xl items-center justify-between gap-3 px-3 py-3 sm:h-16 sm:px-6 sm:py-0">
+        <Link href="/" className="flex shrink-0 items-center gap-2.5" aria-label="Arenswap home">
           <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-blue-500 to-indigo-600 text-sm font-bold text-white shadow-lg shadow-blue-500/25">
             A
           </div>
-          <span className="truncate text-lg font-semibold tracking-tight text-white">
+          <span className="hidden text-lg font-semibold tracking-tight text-white sm:inline">
             Aren<span className="text-blue-400">swap</span>
           </span>
         </Link>
-        <div className="flex items-center gap-3">
+        <div className="flex min-w-0 flex-1 items-center justify-end gap-2 sm:flex-none sm:gap-3">
           <div className="hidden items-center gap-1.5 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-3 py-1 sm:flex">
             <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" />
             <span className="text-xs font-medium text-emerald-400">Arc Testnet</span>
@@ -25,11 +25,13 @@ function Navbar() {
             href="https://faucet.circle.com/"
             target="_blank"
             rel="noopener noreferrer"
-            className="rounded-full border border-blue-300/15 bg-blue-400/[0.07] px-3 py-1 text-xs font-semibold text-blue-100/70 transition-colors hover:border-blue-300/25 hover:bg-blue-400/[0.11] hover:text-blue-50"
+            className="shrink-0 rounded-full border border-blue-300/15 bg-blue-400/[0.07] px-2.5 py-1 text-[11px] font-semibold text-blue-100/70 transition-colors hover:border-blue-300/25 hover:bg-blue-400/[0.11] hover:text-blue-50 sm:px-3 sm:text-xs"
           >
             Faucet
           </a>
-          <ConnectButton chainStatus="icon" showBalance={false} accountStatus="avatar" />
+          <div className="min-w-0 shrink">
+            <ConnectButton chainStatus="icon" showBalance={false} accountStatus="avatar" />
+          </div>
         </div>
       </div>
     </header>
