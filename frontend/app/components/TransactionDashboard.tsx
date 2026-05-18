@@ -42,8 +42,6 @@ const MODE_LABELS: Array<{ value: Mode; label: string }> = [
   { value: 'history', label: 'History' },
 ]
 
-const LOW_USDC_RAW = BigInt(2_000_000)
-
 function nowMs(): number {
   return new Date().getTime()
 }
@@ -577,25 +575,9 @@ function PortfolioMode({ setMode, setPresetToken }: { setMode: (mode: Mode) => v
             </div>
           ))}
           <PrimaryButton disabled={loading} onClick={refresh}>{loading ? 'Refreshing...' : 'Refresh balances'}</PrimaryButton>
-          <FaucetPanel balances={balances} />
         </div>
       )}
     </UtilityCard>
-  )
-}
-
-function FaucetPanel({ balances }: { balances: Record<SupportedToken, bigint | null> }) {
-  const { address } = useAccount()
-  const lowUsdc = balances.USDC !== null && balances.USDC < LOW_USDC_RAW
-  return (
-    <div className="rounded-2xl border border-white/[0.06] bg-white/[0.02] p-4">
-      <div className="mb-3 flex items-center justify-between gap-3">
-        <h3 className="text-sm font-semibold text-white/70">Faucet / Top-up</h3>
-        {address && <CopyButton value={address} label="Copy address" />}
-      </div>
-      {lowUsdc && <p className="mb-2 text-xs text-amber-300/80">Low USDC balance. Arc uses USDC for gas, so keep a small buffer.</p>}
-      <p className="text-xs leading-relaxed text-white/35">Use the official Arc Testnet faucet from Circle/Arc documentation.</p>
-    </div>
   )
 }
 

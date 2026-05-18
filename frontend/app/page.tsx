@@ -22,6 +22,14 @@ function Navbar() {
             <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" />
             <span className="text-xs font-medium text-emerald-400">Arc Testnet</span>
           </div>
+          <a
+            href="https://faucet.circle.com/"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="rounded-full border border-white/[0.08] bg-white/[0.04] px-3 py-1 text-xs font-semibold text-white/50 transition-colors hover:border-white/[0.14] hover:bg-white/[0.07] hover:text-white/80"
+          >
+            Faucet
+          </a>
           <ConnectButton chainStatus="icon" showBalance={false} accountStatus="avatar" />
         </div>
       </div>

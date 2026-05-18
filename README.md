@@ -115,4 +115,4 @@ Use the in-app result card, Recent Transactions, `/tx/[hash]` receipt page, and 
 
 ## Faucet / Top-up
 
-The app shows the connected wallet address, current balances, and low balance warnings. If no faucet URL is already known in the project, use the official Arc Testnet faucet from Circle/Arc documentation.
+Use the global Faucet shortcut next to the Arc Testnet badge to open Circle Faucet.
