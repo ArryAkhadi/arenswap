@@ -40,15 +40,15 @@ export default function Home() {
 
       <Navbar />
 
-      <main className="relative z-10 flex flex-1 flex-col items-center justify-center px-4 py-16">
-        <div className="mb-10 text-center">
-          <h1 className="mb-3 text-4xl font-bold tracking-tight text-white sm:text-5xl">
+      <main className="relative z-10 flex flex-1 flex-col items-center px-4 pb-12 pt-8 sm:pt-10">
+        <div className="mb-6 text-center">
+          <h1 className="mb-2 text-3xl font-bold tracking-tight text-white sm:text-4xl">
             Arc Testnet{' '}
             <span className="bg-gradient-to-r from-blue-400 to-indigo-400 bg-clip-text text-transparent">
               transactions
             </span>
           </h1>
-          <p className="text-base text-white/40 sm:text-lg">
+          <p className="mx-auto max-w-xl text-sm text-white/40 sm:text-base">
             Swap, send, manage approvals, and inspect local receipts for USDC, EURC, and cirBTC.
           </p>
         </div>

@@ -187,7 +187,7 @@ function PublicStatusTimeline({
 
 function UtilityCard({ title, children, right }: { title: string; children: React.ReactNode; right?: React.ReactNode }) {
   return (
-    <div className="w-full max-w-md overflow-hidden rounded-3xl border border-white/[0.08] bg-[#111318] shadow-2xl shadow-black/60">
+    <div className="w-full max-w-[34rem] overflow-hidden rounded-3xl border border-white/[0.08] bg-[#111318] shadow-2xl shadow-black/60">
       <div className="p-5">
         <div className="mb-5 flex items-center justify-between gap-3">
           <h2 className="text-base font-semibold text-white">{title}</h2>
@@ -771,13 +771,13 @@ export default function TransactionDashboard() {
 
   return (
     <div className="flex w-full flex-col items-center">
-      <div className="mb-5 flex w-full max-w-md flex-wrap gap-2 rounded-2xl border border-white/[0.08] bg-[#111318] p-2">
+      <div className="mb-3 flex w-full max-w-[34rem] flex-wrap gap-1.5 rounded-2xl border border-white/[0.08] bg-[#111318] p-1.5 shadow-xl shadow-black/30">
         {MODE_LABELS.map((item) => (
           <button
             key={item.value}
             type="button"
             onClick={() => setMode(item.value)}
-            className={`flex-1 rounded-xl px-3 py-2 text-xs font-semibold transition-colors ${mode === item.value ? 'bg-blue-500/20 text-blue-200' : 'text-white/35 hover:bg-white/[0.04] hover:text-white/70'}`}
+            className={`flex-1 rounded-xl px-2.5 py-2 text-xs font-semibold transition-colors ${mode === item.value ? 'bg-blue-500/25 text-blue-100 shadow-sm shadow-blue-500/10' : 'text-white/35 hover:bg-white/[0.04] hover:text-white/70'}`}
           >
             {item.label}
           </button>

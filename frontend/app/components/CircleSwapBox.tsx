@@ -1362,7 +1362,7 @@ export default function CircleSwapBox() {
         <ReviewModal tokenIn={tokenIn} tokenOut={tokenOut} amountIn={amountIn} address={address} onConfirm={handleConfirmedSwap} onCancel={handleModalCancel} />
       )}
 
-      <div className="flex flex-col items-center w-full max-w-md">
+      <div className="flex w-full max-w-[34rem] flex-col items-center">
         <div className="w-full relative overflow-hidden rounded-3xl border border-white/[0.08] bg-[#111318] shadow-2xl shadow-black/60">
           <div className="pointer-events-none absolute inset-x-0 top-0 h-px" style={{ background: 'linear-gradient(90deg, transparent, rgba(59,130,246,0.5) 40%, rgba(99,102,241,0.5) 60%, transparent)' }} aria-hidden="true" />
 
