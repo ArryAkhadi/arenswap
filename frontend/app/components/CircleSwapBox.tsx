@@ -516,7 +516,7 @@ function StatusTimeline({ phase, approveTxHash }: { phase: Phase; approveTxHash:
       ? 'Approval skipped'
       : 'Approval required / Approval skipped'
 
-  const steps = [
+  const detailedSteps = [
     { key: 'preparing', label: 'Preparing', done: phase !== 'idle' && phase !== 'preparing', active: phase === 'preparing' || phase === 'checking-allowance' },
     { key: 'approval-mode', label: approvalLabel, done: phase === 'approval-skipped' || phase === 'waiting-approval' || phase === 'approval-confirmed' || phase === 'waiting-swap' || phase === 'verifying' || phase === 'success' || phase === 'confirmed-no-delta', active: phase === 'checking-allowance' },
     { key: 'waiting-approval', label: 'Waiting for approval', done: phase === 'approval-confirmed' || phase === 'waiting-swap' || phase === 'verifying' || phase === 'success' || phase === 'confirmed-no-delta', active: phase === 'waiting-approval', hidden: approvalLabel === 'Approval skipped' },
@@ -526,6 +526,15 @@ function StatusTimeline({ phase, approveTxHash }: { phase: Phase; approveTxHash:
     { key: 'verifying', label: 'Verifying transfer events', done: phase === 'success' || phase === 'confirmed-no-delta', active: phase === 'verifying' },
     { key: 'final', label: phase === 'confirmed-no-delta' ? 'Verification failed' : 'Success', done: phase === 'success' || phase === 'confirmed-no-delta', active: false, failed: phase === 'confirmed-no-delta' },
   ].filter((step) => !step.hidden)
+  const walletPhases: Phase[] = ['checking-allowance', 'approval-skipped', 'waiting-approval', 'approval-confirmed', 'waiting-swap']
+  const submittedPhases: Phase[] = ['verifying']
+  const verifiedPhases: Phase[] = ['success', 'confirmed-no-delta']
+  const publicSteps = [
+    { key: 'preparing', label: 'Preparing', done: walletPhases.includes(phase) || submittedPhases.includes(phase) || verifiedPhases.includes(phase), active: phase === 'preparing' },
+    { key: 'wallet', label: phase === 'error' ? 'Transaction failed' : 'Wallet confirmation', done: submittedPhases.includes(phase) || verifiedPhases.includes(phase), active: walletPhases.includes(phase), failed: phase === 'error' },
+    { key: 'submitted', label: 'Transaction submitted', done: verifiedPhases.includes(phase), active: submittedPhases.includes(phase) },
+    { key: 'verified', label: phase === 'confirmed-no-delta' ? 'Verification warning' : 'Verified', done: phase === 'success', active: false, failed: phase === 'confirmed-no-delta' },
+  ]
 
   return (
     <div className="rounded-2xl border border-white/[0.06] bg-white/[0.02] p-4">
@@ -534,7 +543,7 @@ function StatusTimeline({ phase, approveTxHash }: { phase: Phase; approveTxHash:
         <p className="text-xs font-semibold uppercase tracking-wider text-white/35">Transaction status</p>
       </div>
       <div className="space-y-2">
-        {steps.map((step) => (
+        {publicSteps.map((step) => (
           <div key={step.key} className="flex items-center gap-3">
             <span className={`h-2.5 w-2.5 rounded-full ${
               step.failed
@@ -557,6 +566,33 @@ function StatusTimeline({ phase, approveTxHash }: { phase: Phase; approveTxHash:
           </div>
         ))}
       </div>
+      <details className="mt-4">
+        <summary className="cursor-pointer text-xs font-semibold text-white/30 transition-colors hover:text-white/55">Show details</summary>
+        <div className="mt-3 space-y-2 border-t border-white/[0.06] pt-3">
+          {detailedSteps.map((step) => (
+            <div key={step.key} className="flex items-center gap-3">
+              <span className={`h-2 w-2 rounded-full ${
+                step.failed
+                  ? 'bg-amber-400'
+                  : step.done
+                    ? 'bg-emerald-400'
+                    : step.active
+                      ? 'bg-blue-400'
+                      : 'bg-white/15'
+              }`} />
+              <span className={`text-xs ${
+                step.failed
+                  ? 'text-amber-300'
+                  : step.done
+                    ? 'text-white/55'
+                    : step.active
+                      ? 'text-blue-300'
+                      : 'text-white/25'
+              }`}>{step.label}</span>
+            </div>
+          ))}
+        </div>
+      </details>
     </div>
   )
 }
@@ -1420,7 +1456,7 @@ export default function CircleSwapBox() {
 
               <QuotePreview tokenIn={tokenIn} tokenOut={tokenOut} amountIn={amountIn} estimatedOut={estimatedOut} />
 
-              {(isActive || showResult) && <StatusTimeline phase={phase} approveTxHash={approveTxHash} />}
+              {(isActive || showResult || phase === 'error') && <StatusTimeline phase={phase} approveTxHash={approveTxHash} />}
 
               {!isActive && isConnected && chainId === ARC_TESTNET_CHAIN_ID && (
                 <div className="flex items-center justify-between">
