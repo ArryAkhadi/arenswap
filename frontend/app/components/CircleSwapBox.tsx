@@ -60,6 +60,7 @@ const TOKEN_DECIMALS: Record<SupportedToken, number> = {
 const SLIPPAGE_PRESETS = ['0.1', '0.5', '1'] as const
 const SLIPPAGE_CHOICES = [...SLIPPAGE_PRESETS, 'custom'] as const
 type SlippageMode = (typeof SLIPPAGE_PRESETS)[number] | 'custom'
+const LOW_SLIPPAGE_MESSAGE = 'Slippage too low. Try 1% or higher.'
 
 // Canonical ERC-20 addresses on Arc Testnet (from Circle SDK token registry)
 const TOKEN_ADDRESSES: Record<SupportedToken, `0x${string}`> = {
@@ -284,12 +285,33 @@ function isUserRejection(message: string): boolean {
 function isUnsupportedPairError(message: string): boolean {
   const lower = message.toLowerCase()
   return (
-    lower.includes('not supported') ||
-    lower.includes('unsupported') ||
-    lower.includes('no route') ||
-    lower.includes('route not found') ||
+    lower.includes('unsupported pair') ||
     lower.includes('pair unsupported') ||
-    lower.includes('unsupported pair')
+    lower.includes('pair is unsupported') ||
+    lower.includes('token pair is not currently supported') ||
+    lower.includes('not supported') ||
+    lower.includes('no route') ||
+    lower.includes('route not found')
+  )
+}
+
+function isBelowRecommendedSlippage(slippagePercent: number): boolean {
+  return isFinite(slippagePercent) && slippagePercent < 1
+}
+
+function isLowSlippageFailure(message: string, slippagePercent: number): boolean {
+  if (!isBelowRecommendedSlippage(slippagePercent)) return false
+  const lower = message.toLowerCase()
+  return (
+    lower.includes('slippage') ||
+    lower.includes('min') ||
+    lower.includes('limit') ||
+    lower.includes('route') ||
+    lower.includes('quote') ||
+    lower.includes('execution') ||
+    lower.includes('revert') ||
+    lower.includes('unsupported') ||
+    lower.includes('pair')
   )
 }
 
@@ -514,7 +536,13 @@ function QuotePreview({
   const hasAmount = isValidAmount(amountIn)
   const minReceived = computeMinReceived(estimatedOut, slippagePercent)
   const loading = quoteStatus === 'loading'
-  const quoteFallback = quoteStatus === 'error' ? (quoteError ?? 'Quote unavailable') : quoteStatus === 'unavailable' ? 'Quote unavailable' : 'Pending quote'
+  const quoteFallback = quoteStatus === 'loading'
+    ? 'Fetching quote'
+    : quoteStatus === 'error'
+      ? (quoteError ?? 'Quote unavailable')
+      : quoteStatus === 'unavailable'
+        ? quoteError ?? 'Quote unavailable'
+        : 'Pending quote'
 
   return (
     <div className="rounded-2xl border border-white/[0.075] bg-white/[0.03] p-4 shadow-inner shadow-white/[0.015]">
@@ -674,8 +702,8 @@ export default function CircleSwapBox({ onSummaryChange }: { onSummaryChange?: (
   const [tokenIn, setTokenIn] = useState<SupportedToken>('USDC')
   const [tokenOut, setTokenOut] = useState<SupportedToken>('EURC')
   const [amountIn, setAmountIn] = useState('')
-  const [slippageMode, setSlippageMode] = useState<SlippageMode>('0.5')
-  const [customSlippage, setCustomSlippage] = useState('0.5')
+  const [slippageMode, setSlippageMode] = useState<SlippageMode>('1')
+  const [customSlippage, setCustomSlippage] = useState('1')
 
   const [phase, setPhase] = useState<Phase>('idle')
   const [error, setError] = useState<string | null>(null)
@@ -951,7 +979,7 @@ export default function CircleSwapBox({ onSummaryChange }: { onSummaryChange?: (
 
     if (!res.ok || !data.ok) {
       const msg = data.error ?? `Server error ${res.status}`
-      throw new Error(isUnsupportedPairError(msg) ? 'Pair unavailable.' : msg)
+      throw new Error(msg)
     }
 
     const tx = data.transaction as SwapTransaction
@@ -988,7 +1016,7 @@ export default function CircleSwapBox({ onSummaryChange }: { onSummaryChange?: (
   const slippagePercent = slippageMode === 'custom'
     ? isFinite(parsedCustomSlippage) && parsedCustomSlippage >= 0
       ? parsedCustomSlippage
-      : 0.5
+      : 1
     : parseFloat(slippageMode)
   const summaryRate = computeRate(amountIn, estimatedOut)
   const summaryMinReceived = computeMinReceived(estimatedOut, slippagePercent)
@@ -1032,16 +1060,23 @@ export default function CircleSwapBox({ onSummaryChange }: { onSummaryChange?: (
         .catch((quoteErr: unknown) => {
           if (controller.signal.aborted) return
           const message = quoteErr instanceof Error ? quoteErr.message : 'Quote unavailable.'
+          const isLowSlippage = isLowSlippageFailure(message, slippagePercent)
+          const isExplicitUnsupported = isUnsupportedPairError(message) && !isLowSlippage
           if (process.env.NODE_ENV === 'development') {
             console.error('[swap quote] Circle quote error:', quoteErr)
           }
           setQuoteData(null)
           setEstimatedOut(null)
-          setQuoteError(message)
-          if (isUnsupportedPairError(message)) {
+          if (isLowSlippage) {
+            setQuoteError(LOW_SLIPPAGE_MESSAGE)
+            setPairUnavailable(false)
+            setQuoteStatus('error')
+          } else if (isExplicitUnsupported) {
+            setQuoteError('Pair unavailable.')
             setPairUnavailable(true)
             setQuoteStatus('unavailable')
           } else {
+            setQuoteError(message)
             setPairUnavailable(false)
             setQuoteStatus('error')
           }
@@ -1052,7 +1087,7 @@ export default function CircleSwapBox({ onSummaryChange }: { onSummaryChange?: (
       window.clearTimeout(timer)
       controller.abort()
     }
-  }, [address, amountIn, chainId, fetchSwapQuote, isConnected, tokenIn, tokenOut])
+  }, [address, amountIn, chainId, fetchSwapQuote, isConnected, slippagePercent, tokenIn, tokenOut])
 
   useEffect(() => {
     onSummaryChange?.({
@@ -1071,7 +1106,7 @@ export default function CircleSwapBox({ onSummaryChange }: { onSummaryChange?: (
           : quoteStatus === 'ready'
             ? 'Quote ready'
             : quoteStatus === 'unavailable'
-              ? 'Quote unavailable'
+              ? quoteError ?? 'Pair unavailable.'
               : quoteStatus === 'error'
                 ? quoteError ?? 'Quote unavailable'
                 : isActive ? 'Preparing quote' : 'Preview pending',
@@ -1129,6 +1164,16 @@ export default function CircleSwapBox({ onSummaryChange }: { onSummaryChange?: (
     setAmountIn(canKeepAmount ? amountIn : '')
     clearSwapResult()
     fetchBalances(nextTokenIn, nextTokenOut).catch(() => {})
+  }
+
+  function handleSlippageModeChange(nextMode: SlippageMode) {
+    setSlippageMode(nextMode)
+    resetForm()
+  }
+
+  function handleCustomSlippageChange(nextValue: string) {
+    setCustomSlippage(nextValue)
+    resetForm()
   }
 
   function handleSwapButtonClick() {
@@ -1319,6 +1364,9 @@ export default function CircleSwapBox({ onSummaryChange }: { onSummaryChange?: (
       setSwapTxHash(finalTxHash)
       lastSwapTxRef.current = finalTxHash
       await publicClient.waitForTransactionReceipt({ hash: finalTxHash })
+      setError(null)
+      setQuoteError(null)
+      setPairUnavailable(false)
 
       // Step 5: Verify  wait for RPC indexing then check balance deltas + Transfer events
       setPhaseSync('verifying')
@@ -1335,6 +1383,11 @@ export default function CircleSwapBox({ onSummaryChange }: { onSummaryChange?: (
       })
 
       setPhaseSync(passed ? 'success' : 'confirmed-no-delta')
+      setQuoteData(data)
+      setEstimatedOut(data.estimatedAmountFormatted ?? null)
+      setQuoteStatus('ready')
+      setQuoteError(null)
+      setPairUnavailable(false)
 
       // Step 6: Record in history only if verification passed
       if (passed) {
@@ -1375,10 +1428,20 @@ export default function CircleSwapBox({ onSummaryChange }: { onSummaryChange?: (
         const wasApproving = p === 'waiting-approval' || p === 'checking-allowance'
         setError(wasApproving ? 'User rejected approval.' : 'User rejected swap.')
       } else {
-        const friendlyMessage = formatErrorMessage(message, phaseRef.current)
+        const isLowSlippage = isLowSlippageFailure(message, slippagePercent)
+        const isExplicitUnsupported = isUnsupportedPairError(message) && !isLowSlippage
+        const friendlyMessage = isLowSlippage ? LOW_SLIPPAGE_MESSAGE : formatErrorMessage(message, phaseRef.current)
         setError(friendlyMessage)
-        if (isUnsupportedPairError(message)) {
+        if (isLowSlippage) {
+          setQuoteError(LOW_SLIPPAGE_MESSAGE)
+          setQuoteStatus('error')
+          setPairUnavailable(false)
+        } else if (isExplicitUnsupported) {
+          setQuoteError('Pair unavailable.')
+          setQuoteStatus('unavailable')
           setPairUnavailable(true)
+        } else {
+          setPairUnavailable(false)
         }
         if (finalSwapTxHash) {
           addEntry({
@@ -1481,7 +1544,7 @@ export default function CircleSwapBox({ onSummaryChange }: { onSummaryChange?: (
                 <input id="circle-amount-in" type="number" inputMode="decimal" placeholder="0.00" value={amountIn} onChange={(e) => { setAmountIn(e.target.value); resetForm() }} onKeyDown={(e) => { if (e.key === 'Enter') e.preventDefault() }} disabled={isActive} min="0" step="any" aria-label={`Amount of ${tokenIn} to swap`} className="rounded-2xl border border-white/[0.09] bg-white/[0.04] px-4 py-4 text-2xl font-semibold text-white outline-none placeholder:text-white/30 shadow-inner shadow-white/[0.015] transition-colors hover:border-white/[0.16] hover:bg-white/[0.055] focus:border-blue-400/55 focus:bg-white/[0.065] disabled:cursor-not-allowed disabled:opacity-65 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none" />
               </div>
 
-              <SlippageControl mode={slippageMode} customValue={customSlippage} onModeChange={setSlippageMode} onCustomChange={setCustomSlippage} />
+              <SlippageControl mode={slippageMode} customValue={customSlippage} onModeChange={handleSlippageModeChange} onCustomChange={handleCustomSlippageChange} />
 
               <div className="xl:hidden">
                 <QuotePreview tokenIn={tokenIn} tokenOut={tokenOut} amountIn={amountIn} estimatedOut={estimatedOut} slippagePercent={slippagePercent} quoteStatus={quoteStatus} quoteError={quoteError} />
