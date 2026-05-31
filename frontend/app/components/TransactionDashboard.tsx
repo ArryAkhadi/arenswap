@@ -798,91 +798,164 @@ function SidePanel({ title, children }: { title: string; children: React.ReactNo
   )
 }
 
-function DashboardSideRail({ mode }: { mode: Mode }) {
+function MiniRow({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-2xl border border-white/[0.06] bg-white/[0.025] px-3 py-2">
+      <span className="text-xs text-white/45">{label}</span>
+      <span className="min-w-0 truncate text-right text-xs font-semibold text-white/65">{value}</span>
+    </div>
+  )
+}
+
+function DashboardSideRail({
+  mode,
+  setMode,
+  setPresetToken,
+}: {
+  mode: Mode
+  setMode: (mode: Mode) => void
+  setPresetToken: (token: SupportedToken) => void
+}) {
   const { address, isConnected } = useAccount()
   const chainId = useChainId()
-  const { balances, loading } = useTokenBalances()
   const { history } = useSwapHistory()
   const recent = history.slice(0, 3)
   const isArc = chainId === ARC_TESTNET_CHAIN_ID
+  const statusPill = (
+    <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${isConnected ? 'border-emerald-400/25 bg-emerald-500/10 text-emerald-300' : 'border-white/[0.08] bg-white/[0.03] text-white/50'}`}>
+      {isConnected ? 'Connected' : 'Not connected'}
+    </span>
+  )
+  const networkPill = (
+    <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${isArc ? 'border-blue-400/25 bg-blue-500/10 text-blue-300' : 'border-amber-400/25 bg-amber-500/10 text-amber-300'}`}>
+      {isArc ? ARC_TESTNET_NAME : 'Switch required'}
+    </span>
+  )
 
-  return (
-    <aside className="hidden w-full space-y-3 lg:block">
-      <SidePanel title="Wallet">
-        <div className="space-y-3">
-          <div className="flex items-center justify-between gap-3">
-            <span className="text-xs text-white/45">Status</span>
-            <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${isConnected ? 'border-emerald-400/25 bg-emerald-500/10 text-emerald-300' : 'border-white/[0.08] bg-white/[0.03] text-white/50'}`}>
-              {isConnected ? 'Connected' : 'Not connected'}
-            </span>
-          </div>
-          <div className="flex items-center justify-between gap-3">
-            <span className="text-xs text-white/45">Network</span>
-            <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${isArc ? 'border-blue-400/25 bg-blue-500/10 text-blue-300' : 'border-amber-400/25 bg-amber-500/10 text-amber-300'}`}>
-              {isArc ? ARC_TESTNET_NAME : 'Switch required'}
-            </span>
-          </div>
-          {address && (
-            <div className="flex items-center justify-between gap-2 rounded-2xl border border-white/[0.06] bg-white/[0.025] px-3 py-2">
-              <a href={explorerAddressUrl(address)} target="_blank" rel="noopener noreferrer" className="min-w-0 truncate font-mono text-xs text-white/60 hover:text-white/80">
-                {truncateHash(address)}
-              </a>
-              <CopyButton value={address} />
-            </div>
-          )}
-        </div>
-      </SidePanel>
-
-      <SidePanel title="Balances">
-        {!isConnected ? (
-          <p className="text-xs leading-relaxed text-white/42">Connect wallet to show Arc Testnet balances.</p>
-        ) : (
-          <div className="space-y-2">
-            {SUPPORTED_TOKENS.map((token) => (
-              <div key={token} className="flex items-center justify-between gap-3 rounded-2xl border border-white/[0.06] bg-white/[0.025] px-3 py-2">
-                <span className="text-xs font-semibold text-white/65">{token}</span>
-                <span className="text-xs text-white/55">
-                  {loading ? 'Checking...' : balances[token] !== null ? formatTokenAmount(balances[token]!, token) : '--'}
-                </span>
-              </div>
-            ))}
-          </div>
-        )}
-      </SidePanel>
-
-      <SidePanel title="Activity">
-        {recent.length === 0 ? (
-          <p className="text-xs leading-relaxed text-white/42">Recent swaps, sends, and approvals will appear here.</p>
-        ) : (
-          <div className="space-y-2">
-            {recent.map((entry) => {
-              const type = entry.type ?? 'swap'
-              const txHash = entry.txHash ?? entry.swapTxHash ?? entry.approvalTxHash ?? null
-              return (
-                <div key={entry.id} className="rounded-2xl border border-white/[0.06] bg-white/[0.025] px-3 py-2">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-xs font-semibold capitalize text-white/65">{type.replace('_', ' ')}</span>
-                    <span className="text-[10px] text-white/35">{String(entry.status).replace('_', ' ')}</span>
-                  </div>
-                  {txHash && (
-                    <a href={`/tx/${txHash}`} className="mt-1 block truncate text-[11px] text-blue-300/70 underline underline-offset-2">
-                      {truncateHash(txHash)}
-                    </a>
-                  )}
-                </div>
-              )
-            })}
-          </div>
-        )}
-      </SidePanel>
-
+  const footer = (
       <div className="rounded-3xl border border-white/[0.06] bg-white/[0.025] px-4 py-3">
         <div className="flex items-center justify-between gap-3">
           <span className="text-xs text-white/42">Active</span>
           <span className="text-xs font-semibold text-white/65">{MODE_LABELS.find((item) => item.value === mode)?.label}</span>
         </div>
-        <p className="mt-2 text-[11px] font-semibold uppercase tracking-wider text-white/32">Circle Swap Kit · Arc Testnet</p>
+        <p className="mt-2 text-[11px] font-semibold uppercase tracking-wider text-white/32">Circle Swap Kit &middot; Arc Testnet</p>
       </div>
+  )
+
+  return (
+    <aside className="hidden w-full space-y-3 lg:block">
+      {mode === 'swap' && (
+        <>
+          <SidePanel title="Swap Summary">
+            <div className="space-y-2">
+              <MiniRow label="Wallet" value={statusPill} />
+              <MiniRow label="Network" value={networkPill} />
+              <MiniRow label="Quote" value="Shown after amount" />
+              <MiniRow label="Fee" value="Wallet estimate" />
+            </div>
+          </SidePanel>
+          <SidePanel title="Quote Preview">
+            <div className="grid grid-cols-2 gap-2">
+              <MiniRow label="Rate" value="In swap card" />
+              <MiniRow label="Min received" value="In swap card" />
+              <MiniRow label="Slippage" value="Configurable" />
+              <MiniRow label="Status" value="On-chain quote" />
+            </div>
+          </SidePanel>
+        </>
+      )}
+
+      {mode === 'send' && (
+        <SidePanel title="Send Summary">
+          <div className="space-y-2">
+            <MiniRow label="Recipient" value="Set in form" />
+            <MiniRow label="Token" value="Selected in form" />
+            <MiniRow label="Amount" value="Entered in form" />
+            <MiniRow label="Network fee" value="Wallet estimate" />
+            <MiniRow label="Status" value={isConnected ? 'Ready to review' : 'Connect wallet'} />
+          </div>
+        </SidePanel>
+      )}
+
+      {mode === 'batch' && (
+        <SidePanel title="Batch Summary">
+          <div className="space-y-2">
+            <MiniRow label="Recipients" value="Up to 5" />
+            <MiniRow label="Total" value="Calculated in form" />
+            <MiniRow label="Token" value="Selected in form" />
+            <MiniRow label="Fee" value="One estimate per tx" />
+          </div>
+        </SidePanel>
+      )}
+
+      {mode === 'portfolio' && (
+        <>
+          <SidePanel title="Wallet Details">
+            <div className="space-y-2">
+              <MiniRow label="Status" value={statusPill} />
+              <MiniRow label="Network" value={networkPill} />
+              {address && (
+                <div className="flex items-center justify-between gap-2 rounded-2xl border border-white/[0.06] bg-white/[0.025] px-3 py-2">
+                  <a href={explorerAddressUrl(address)} target="_blank" rel="noopener noreferrer" className="min-w-0 truncate font-mono text-xs text-white/60 hover:text-white/80">
+                    {truncateHash(address)}
+                  </a>
+                  <CopyButton value={address} />
+                </div>
+              )}
+            </div>
+          </SidePanel>
+          <SidePanel title="Quick Actions">
+            <div className="grid grid-cols-3 gap-2">
+              {SUPPORTED_TOKENS.map((token) => (
+                <button key={token} type="button" onClick={() => { setPresetToken(token); setMode('swap') }} className="rounded-xl border border-white/[0.08] px-2 py-2 text-xs font-semibold text-white/50 hover:text-white/80">
+                  {token}
+                </button>
+              ))}
+            </div>
+          </SidePanel>
+        </>
+      )}
+
+      {mode === 'approvals' && (
+        <SidePanel title="Approval Summary">
+          <div className="space-y-2">
+            <MiniRow label="Spender" value={truncateHash(CIRCLE_SWAP_ADAPTER)} />
+            <MiniRow label="Scope" value="Known swap spender" />
+            <MiniRow label="Tokens" value="USDC, EURC, cirBTC" />
+            <MiniRow label="Action" value="Revoke to zero" />
+          </div>
+        </SidePanel>
+      )}
+
+      {mode === 'history' && (
+        <SidePanel title="Recent Summary">
+          {recent.length === 0 ? (
+            <p className="text-xs leading-relaxed text-white/42">No local transaction records yet.</p>
+          ) : (
+            <div className="space-y-2">
+              {recent.map((entry) => {
+                const type = entry.type ?? 'swap'
+                const txHash = entry.txHash ?? entry.swapTxHash ?? entry.approvalTxHash ?? null
+                return (
+                  <div key={entry.id} className="rounded-2xl border border-white/[0.06] bg-white/[0.025] px-3 py-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs font-semibold capitalize text-white/65">{type.replace('_', ' ')}</span>
+                      <span className="text-[10px] text-white/35">{String(entry.status).replace('_', ' ')}</span>
+                    </div>
+                    {txHash && (
+                      <a href={`/tx/${txHash}`} className="mt-1 block truncate text-[11px] text-blue-300/70 underline underline-offset-2">
+                        {truncateHash(txHash)}
+                      </a>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </SidePanel>
+      )}
+
+      {footer}
     </aside>
   )
 }
@@ -892,7 +965,7 @@ export default function TransactionDashboard() {
   const [presetToken, setPresetToken] = useState<SupportedToken>('USDC')
 
   return (
-    <div className="grid w-full max-w-3xl grid-cols-1 gap-4 lg:max-w-6xl lg:grid-cols-[minmax(0,34rem)_minmax(18rem,1fr)] lg:items-start lg:gap-6">
+    <div className="grid w-full max-w-3xl grid-cols-1 gap-4 lg:max-w-7xl lg:grid-cols-[minmax(0,36rem)_minmax(20rem,1fr)] lg:items-start lg:gap-8">
       <div className="lg:col-span-2">
         <div className="flex w-full flex-wrap gap-1.5 rounded-2xl border border-white/[0.09] bg-[#10131b]/72 p-1.5 shadow-xl shadow-black/25 backdrop-blur-xl">
         {MODE_LABELS.map((item) => (
@@ -915,7 +988,7 @@ export default function TransactionDashboard() {
         {mode === 'approvals' && <ApprovalsMode />}
         {mode === 'history' && <HistoryMode />}
       </div>
-      <DashboardSideRail mode={mode} />
+      <DashboardSideRail mode={mode} setMode={setMode} setPresetToken={setPresetToken} />
     </div>
   )
 }

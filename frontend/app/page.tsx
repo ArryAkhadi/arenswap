@@ -122,7 +122,7 @@ export default function Home() {
 
       <Navbar />
 
-      <main className="relative z-10 flex flex-1 flex-col items-center px-4 pb-12 pt-6 sm:pt-8">
+      <main className="relative z-10 flex flex-1 flex-col items-center px-6 pb-12 pt-6 sm:pt-8 lg:px-8">
         <div className="mb-5 text-center">
           <h1 className="mb-2 text-3xl font-bold tracking-tight text-white sm:text-4xl">
             Swap stablecoins on <span className="bg-gradient-to-r from-blue-400 to-indigo-400 bg-clip-text text-transparent">Arc Testnet</span>
@@ -137,7 +137,7 @@ export default function Home() {
           </div>
         </div>
 
-        <div className="mb-4 w-full max-w-3xl rounded-3xl border border-blue-400/[0.12] bg-blue-500/[0.045] p-4 shadow-xl shadow-black/20 backdrop-blur-xl lg:max-w-6xl">
+        <div className="mb-4 w-full max-w-3xl rounded-3xl border border-blue-400/[0.12] bg-blue-500/[0.045] p-4 shadow-xl shadow-black/20 backdrop-blur-xl lg:max-w-7xl">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="min-w-0">
               <p className="text-sm font-semibold text-white">Need testnet tokens?</p>
