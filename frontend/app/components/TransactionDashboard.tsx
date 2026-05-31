@@ -280,13 +280,19 @@ function useTokenBalances() {
 }
 
 function BridgeMode({ onSummaryChange }: { onSummaryChange?: (summary: BridgeSummaryState) => void }) {
-  const { isConnected } = useAccount()
+  const { address, isConnected } = useAccount()
   const [fromNetwork, setFromNetwork] = useState<BridgeSourceNetwork>('Base')
   const [amount, setAmount] = useState('')
   const [destination, setDestination] = useState('')
+  const destinationEditedRef = useRef(false)
   const parsedAmount = Number(amount)
   const hasAmount = Number.isFinite(parsedAmount) && parsedAmount > 0
   const destinationIsValid = destination === '' || isAddress(destination)
+
+  useEffect(() => {
+    if (!address || destinationEditedRef.current || destination !== '') return
+    queueMicrotask(() => setDestination(address))
+  }, [address, destination])
 
   useEffect(() => {
     onSummaryChange?.({
@@ -301,7 +307,7 @@ function BridgeMode({ onSummaryChange }: { onSummaryChange?: (summary: BridgeSum
 
   const bridgeButtonText = !hasAmount
     ? 'Enter amount'
-    : !destinationIsValid || destination === ''
+    : destination === '' || !destinationIsValid
       ? 'Enter destination'
       : 'Bridge Kit integration coming soon'
 
@@ -354,9 +360,12 @@ function BridgeMode({ onSummaryChange }: { onSummaryChange?: (summary: BridgeSum
           <FieldLabel>Destination wallet</FieldLabel>
           <input
             value={destination}
-            onChange={(event) => setDestination(event.target.value)}
+            onChange={(event) => {
+              destinationEditedRef.current = true
+              setDestination(event.target.value)
+            }}
             className="w-full rounded-xl border border-white/[0.08] bg-white/[0.03] px-4 py-3 text-sm text-white outline-none focus:border-blue-500/50"
-            placeholder="0x..."
+            placeholder={isConnected ? '0x...' : 'Connect wallet to set destination'}
           />
           {!destinationIsValid && <p className="text-xs text-amber-300/80">Enter a valid EVM address.</p>}
         </div>
