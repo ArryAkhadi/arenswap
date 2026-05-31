@@ -66,9 +66,11 @@ function Navbar() {
     <header className="sticky top-0 z-50 w-full border-b border-white/[0.07] bg-[#080a10]/75 backdrop-blur-xl">
       <div className="mx-auto flex min-h-16 max-w-6xl items-center justify-between gap-3 px-3 py-3 sm:h-16 sm:px-6 sm:py-0">
         <Link href="/" className="flex shrink-0 items-center gap-2.5" aria-label="Arenswap home">
-          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-blue-500 to-indigo-600 text-sm font-bold text-white shadow-lg shadow-blue-500/25">
-            A
-          </div>
+          <img
+            src="/favicon.ico"
+            alt="Arenswap logo"
+            className="h-8 w-8 shrink-0 rounded-lg object-cover"
+          />
           <span className="hidden text-lg font-semibold tracking-tight text-white sm:inline">Arenswap</span>
         </Link>
         <div className="flex min-w-0 flex-1 items-center justify-end gap-2 sm:flex-none sm:gap-3">
