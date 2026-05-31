@@ -195,6 +195,8 @@ type Phase =
   | 'confirmed-no-delta'   // tx confirmed but no balance change detected
   | 'error'
 
+type QuoteStatus = 'idle' | 'loading' | 'ready' | 'unavailable' | 'error'
+
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
 interface SwapInstruction {
@@ -285,8 +287,9 @@ function isUnsupportedPairError(message: string): boolean {
     lower.includes('not supported') ||
     lower.includes('unsupported') ||
     lower.includes('no route') ||
-    lower.includes('invalid token') ||
-    lower.includes('pair')
+    lower.includes('route not found') ||
+    lower.includes('pair unsupported') ||
+    lower.includes('unsupported pair')
   )
 }
 
@@ -303,9 +306,8 @@ function isCircleApiError(message: string): boolean {
 }
 
 function formatErrorMessage(message: string, phase: Phase): string {
-  if (isUnsupportedPairError(message) || isCircleApiError(message)) {
-    return 'This pair is temporarily unavailable on Arc Testnet.'
-  }
+  if (isUnsupportedPairError(message)) return 'Pair unavailable.'
+  if (isCircleApiError(message)) return message
   if (message.toLowerCase().includes('insufficient')) return 'Insufficient balance.'
   if (phase === 'confirmed-no-delta' || message.toLowerCase().includes('verification')) {
     return 'Verification failed. Check transfer events on the explorer.'
@@ -497,18 +499,22 @@ function QuotePreview({
   amountIn,
   estimatedOut,
   slippagePercent,
-  loading,
+  quoteStatus,
+  quoteError,
 }: {
   tokenIn: SupportedToken
   tokenOut: SupportedToken
   amountIn: string
   estimatedOut: string | null
   slippagePercent: number
-  loading: boolean
+  quoteStatus: QuoteStatus
+  quoteError: string | null
 }) {
   const rate = computeRate(amountIn, estimatedOut)
   const hasAmount = isValidAmount(amountIn)
   const minReceived = computeMinReceived(estimatedOut, slippagePercent)
+  const loading = quoteStatus === 'loading'
+  const quoteFallback = quoteStatus === 'error' ? (quoteError ?? 'Quote unavailable') : quoteStatus === 'unavailable' ? 'Quote unavailable' : 'Pending quote'
 
   return (
     <div className="rounded-2xl border border-white/[0.075] bg-white/[0.03] p-4 shadow-inner shadow-white/[0.015]">
@@ -529,11 +535,11 @@ function QuotePreview({
         <div className="grid grid-cols-2 gap-2 text-xs">
           <div className="rounded-xl border border-white/[0.06] bg-black/10 px-3 py-2">
             <p className="text-white/38">Rate</p>
-            <p className="mt-1 truncate font-semibold text-white/75">{rate ? `1 ${tokenIn} = ${rate} ${tokenOut}` : 'Pending quote'}</p>
+            <p className="mt-1 truncate font-semibold text-white/75">{rate ? `1 ${tokenIn} = ${rate} ${tokenOut}` : quoteFallback}</p>
           </div>
           <div className="rounded-xl border border-white/[0.06] bg-black/10 px-3 py-2">
             <p className="text-white/38">Min received</p>
-            <p className="mt-1 truncate font-semibold text-white/75">{minReceived ? `${minReceived} ${tokenOut}` : 'Pending quote'}</p>
+            <p className="mt-1 truncate font-semibold text-white/75">{minReceived ? `${minReceived} ${tokenOut}` : quoteFallback}</p>
           </div>
           <div className="rounded-xl border border-white/[0.06] bg-black/10 px-3 py-2">
             <p className="text-white/38">Slippage</p>
@@ -676,6 +682,9 @@ export default function CircleSwapBox({ onSummaryChange }: { onSummaryChange?: (
   const [approveTxHash, setApproveTxHash] = useState<string | null>(null)
   const [swapTxHash, setSwapTxHash] = useState<string | null>(null)
   const [estimatedOut, setEstimatedOut] = useState<string | null>(null)
+  const [quoteStatus, setQuoteStatus] = useState<QuoteStatus>('idle')
+  const [quoteError, setQuoteError] = useState<string | null>(null)
+  const [quoteData, setQuoteData] = useState<ProxyResponse | null>(null)
   const [showModal, setShowModal] = useState(false)
   const [verification, setVerification] = useState<VerificationResult | null>(null)
   const [ignoredTransferReasons, setIgnoredTransferReasons] = useState<string[]>([])
@@ -928,6 +937,31 @@ export default function CircleSwapBox({ onSummaryChange }: { onSummaryChange?: (
     resetForm()
   }
 
+  const fetchSwapQuote = useCallback(async (signal?: AbortSignal): Promise<ProxyResponse> => {
+    if (!address) throw new Error('Wallet address is required for quote.')
+
+    const res = await fetch('/api/circle/swap', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tokenIn, tokenOut, amountIn, fromAddress: address, toAddress: address, chain: 'Arc_Testnet' }),
+      signal,
+    })
+
+    const data = await res.json() as ProxyResponse
+
+    if (!res.ok || !data.ok) {
+      const msg = data.error ?? `Server error ${res.status}`
+      throw new Error(isUnsupportedPairError(msg) ? 'Pair unavailable.' : msg)
+    }
+
+    const tx = data.transaction as SwapTransaction
+    if (!tx?.executionParams?.instructions?.length) {
+      throw new Error('Circle returned an empty transaction payload.')
+    }
+
+    return data
+  }, [address, amountIn, tokenIn, tokenOut])
+
   //  Validation 
 
   function getValidationError(): string | null {
@@ -936,7 +970,11 @@ export default function CircleSwapBox({ onSummaryChange }: { onSummaryChange?: (
     if (!walletClient) return 'Wallet connection is not ready. Reconnect your wallet and try again.'
     if (tokenIn === tokenOut) return 'Select different tokens.'
     if (!isValidAmount(amountIn)) return 'Enter a valid amount greater than zero.'
-    if (pairUnavailable) return 'This pair is temporarily unavailable on Arc Testnet.'
+    if (pairUnavailable) return 'Pair unavailable.'
+    if (quoteStatus === 'loading') return 'Fetching quote.'
+    if (quoteStatus === 'unavailable') return quoteError ?? 'Quote unavailable.'
+    if (quoteStatus === 'error') return quoteError ?? 'Quote unavailable.'
+    if (quoteStatus !== 'ready' || !quoteData) return 'Quote unavailable.'
     const amountBaseUnits = parseAmountToBaseUnits(amountIn, TOKEN_DECIMALS[tokenIn])
     if (rawBalanceIn !== null && amountBaseUnits !== null && amountBaseUnits > rawBalanceIn) {
       return 'Insufficient balance.'
@@ -956,6 +994,67 @@ export default function CircleSwapBox({ onSummaryChange }: { onSummaryChange?: (
   const summaryMinReceived = computeMinReceived(estimatedOut, slippagePercent)
 
   useEffect(() => {
+    const canFetchQuote =
+      isConnected &&
+      Boolean(address) &&
+      chainId === ARC_TESTNET_CHAIN_ID &&
+      tokenIn !== tokenOut &&
+      isValidAmount(amountIn)
+
+    if (!canFetchQuote) {
+      queueMicrotask(() => {
+        setQuoteStatus('idle')
+        setQuoteError(null)
+        setQuoteData(null)
+        setEstimatedOut(null)
+        setPairUnavailable(false)
+      })
+      return
+    }
+
+    const controller = new AbortController()
+    const timer = window.setTimeout(() => {
+      setQuoteStatus('loading')
+      setQuoteError(null)
+      setQuoteData(null)
+      setEstimatedOut(null)
+      setPairUnavailable(false)
+
+      fetchSwapQuote(controller.signal)
+        .then((data) => {
+          if (controller.signal.aborted) return
+          setQuoteData(data)
+          setEstimatedOut(data.estimatedAmountFormatted ?? null)
+          setQuoteStatus('ready')
+          setQuoteError(null)
+          setPairUnavailable(false)
+        })
+        .catch((quoteErr: unknown) => {
+          if (controller.signal.aborted) return
+          const message = quoteErr instanceof Error ? quoteErr.message : 'Quote unavailable.'
+          if (process.env.NODE_ENV === 'development') {
+            console.error('[swap quote] Circle quote error:', quoteErr)
+          }
+          setQuoteData(null)
+          setEstimatedOut(null)
+          setQuoteError(message)
+          if (isUnsupportedPairError(message)) {
+            setPairUnavailable(true)
+            setQuoteStatus('unavailable')
+          } else {
+            setPairUnavailable(false)
+            setQuoteStatus('error')
+          }
+        })
+    }, 350)
+
+    return () => {
+      window.clearTimeout(timer)
+      controller.abort()
+    }
+  }, [address, amountIn, chainId, fetchSwapQuote, isConnected, tokenIn, tokenOut])
+
+  useEffect(() => {
     onSummaryChange?.({
       tokenIn,
       tokenOut,
@@ -965,10 +1064,20 @@ export default function CircleSwapBox({ onSummaryChange }: { onSummaryChange?: (
       slippagePercent,
       networkFee: 'Wallet estimate',
       route: 'Circle Swap Kit',
-      status: isValidAmount(amountIn) ? (estimatedOut ? 'Quote ready' : isActive ? 'Preparing quote' : 'Preview pending') : 'Enter amount',
+      status: !isValidAmount(amountIn)
+        ? 'Enter amount'
+        : quoteStatus === 'loading'
+          ? 'Fetching quote'
+          : quoteStatus === 'ready'
+            ? 'Quote ready'
+            : quoteStatus === 'unavailable'
+              ? 'Quote unavailable'
+              : quoteStatus === 'error'
+                ? quoteError ?? 'Quote unavailable'
+                : isActive ? 'Preparing quote' : 'Preview pending',
       balanceIn,
     })
-  }, [amountIn, balanceIn, estimatedOut, isActive, onSummaryChange, slippagePercent, summaryMinReceived, summaryRate, tokenIn, tokenOut])
+  }, [amountIn, balanceIn, estimatedOut, isActive, onSummaryChange, quoteError, quoteStatus, slippagePercent, summaryMinReceived, summaryRate, tokenIn, tokenOut])
 
   //  Reset 
 
@@ -982,6 +1091,9 @@ export default function CircleSwapBox({ onSummaryChange }: { onSummaryChange?: (
     setApproveTxHash(null)
     setSwapTxHash(null)
     setEstimatedOut(null)
+    setQuoteStatus('idle')
+    setQuoteError(null)
+    setQuoteData(null)
     setVerification(null)
     setIgnoredTransferReasons([])
     setBalanceStale(false)
@@ -994,6 +1106,9 @@ export default function CircleSwapBox({ onSummaryChange }: { onSummaryChange?: (
     setApproveTxHash(null)
     setSwapTxHash(null)
     setEstimatedOut(null)
+    setQuoteStatus('idle')
+    setQuoteError(null)
+    setQuoteData(null)
     setVerification(null)
     setIgnoredTransferReasons([])
     setBalanceStale(false)
@@ -1047,24 +1162,14 @@ export default function CircleSwapBox({ onSummaryChange }: { onSummaryChange?: (
       const snapshot: BalanceSnapshot = { rawIn: rawInBefore, rawOut: rawOutBefore }
       snapshotRef.current = snapshot
 
-      // Step 2: Get EVM payload from server proxy
-      const res = await fetch('/api/circle/swap', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tokenIn, tokenOut, amountIn, fromAddress: address, toAddress: address, chain: 'Arc_Testnet' }),
-      })
-
-      const data: ProxyResponse = await res.json()
-
-      if (!res.ok || !data.ok) {
-        const msg = data.error ?? `Server error ${res.status}`
-        throw new Error(isUnsupportedPairError(msg) ? 'This token pair is not currently supported on Arc Testnet.' : msg)
-      }
+      // Step 2: Get EVM payload from server proxy.
+      const data = await fetchSwapQuote()
 
       setEstimatedOut(data.estimatedAmountFormatted ?? null)
 
       const tx = data.transaction as SwapTransaction
-      if (!tx?.executionParams?.instructions?.length) {
+      const executionParams = tx.executionParams
+      if (!executionParams?.instructions?.length) {
         throw new Error('Circle returned an empty transaction payload.')
       }
 
@@ -1132,7 +1237,7 @@ export default function CircleSwapBox({ onSummaryChange }: { onSummaryChange?: (
 
       // Build executeParams struct from Circle's response
       const executeParams = {
-        instructions: tx.executionParams.instructions.map((instr) => ({
+        instructions: executionParams.instructions.map((instr) => ({
           target:          instr.target as `0x${string}`,
           data:            instr.data as `0x${string}`,
           value:           BigInt(instr.value || '0'),
@@ -1141,13 +1246,13 @@ export default function CircleSwapBox({ onSummaryChange }: { onSummaryChange?: (
           tokenOut:        instr.tokenOut as `0x${string}`,
           minTokenOut:     BigInt(instr.minTokenOut || '0'),
         })),
-        tokens: tx.executionParams.tokens.map((t) => ({
+        tokens: executionParams.tokens.map((t) => ({
           token:       t.token as `0x${string}`,
           beneficiary: t.beneficiary as `0x${string}`,
         })),
-        execId:   BigInt(tx.executionParams.execId),
-        deadline: BigInt(tx.executionParams.deadline),
-        metadata: tx.executionParams.metadata as `0x${string}`,
+        execId:   BigInt(executionParams.execId),
+        deadline: BigInt(executionParams.deadline),
+        metadata: executionParams.metadata as `0x${string}`,
       }
 
       const totalInstructionValue = executeParams.instructions.reduce(
@@ -1188,9 +1293,9 @@ export default function CircleSwapBox({ onSummaryChange }: { onSummaryChange?: (
           requiredAmount: requiredAmount.toString(),
           tokenInputsCount: tokenInputs.length,
           gasLimit: tx.gasLimit,
-          execId: tx.executionParams.execId,
-          deadline: tx.executionParams.deadline,
-          instructionCount: tx.executionParams.instructions.length,
+          execId: executionParams.execId,
+          deadline: executionParams.deadline,
+          instructionCount: executionParams.instructions.length,
           signature: signature.slice(0, 20) + '…',
         })
       }
@@ -1262,6 +1367,9 @@ export default function CircleSwapBox({ onSummaryChange }: { onSummaryChange?: (
       setBalanceStale(false)
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'An unexpected error occurred.'
+      if (process.env.NODE_ENV === 'development') {
+        console.error('[swap] Circle swap error:', err)
+      }
       if (isUserRejection(message)) {
         const p = phaseRef.current
         const wasApproving = p === 'waiting-approval' || p === 'checking-allowance'
@@ -1269,7 +1377,7 @@ export default function CircleSwapBox({ onSummaryChange }: { onSummaryChange?: (
       } else {
         const friendlyMessage = formatErrorMessage(message, phaseRef.current)
         setError(friendlyMessage)
-        if (friendlyMessage === 'This pair is temporarily unavailable on Arc Testnet.') {
+        if (isUnsupportedPairError(message)) {
           setPairUnavailable(true)
         }
         if (finalSwapTxHash) {
@@ -1376,7 +1484,7 @@ export default function CircleSwapBox({ onSummaryChange }: { onSummaryChange?: (
               <SlippageControl mode={slippageMode} customValue={customSlippage} onModeChange={setSlippageMode} onCustomChange={setCustomSlippage} />
 
               <div className="xl:hidden">
-                <QuotePreview tokenIn={tokenIn} tokenOut={tokenOut} amountIn={amountIn} estimatedOut={estimatedOut} slippagePercent={slippagePercent} loading={isActive && !showResult} />
+                <QuotePreview tokenIn={tokenIn} tokenOut={tokenOut} amountIn={amountIn} estimatedOut={estimatedOut} slippagePercent={slippagePercent} quoteStatus={quoteStatus} quoteError={quoteError} />
               </div>
 
               {(isActive || showResult || phase === 'error') && <StatusTimeline phase={phase} swapTxHash={swapTxHash} />}

@@ -841,8 +841,8 @@ function DashboardSideRail({
           ) : (
             <div className="space-y-1">
               <MiniRow label="Wallet" value={statusPill} />
-              <MiniRow label="Rate" value={swapSummary.rate ? `1 ${swapSummary.tokenIn} = ${swapSummary.rate} ${swapSummary.tokenOut}` : 'Pending quote'} />
-              <MiniRow label="Min received" value={swapSummary.minReceived ? `${swapSummary.minReceived} ${swapSummary.tokenOut}` : 'Pending quote'} />
+              <MiniRow label="Rate" value={swapSummary.rate ? `1 ${swapSummary.tokenIn} = ${swapSummary.rate} ${swapSummary.tokenOut}` : swapSummary.status} />
+              <MiniRow label="Min received" value={swapSummary.minReceived ? `${swapSummary.minReceived} ${swapSummary.tokenOut}` : swapSummary.status} />
               <MiniRow label="Slippage" value={`${swapSummary.slippagePercent.toLocaleString(undefined, { maximumFractionDigits: 2 })}%`} />
               <MiniRow label="Fee" value={swapSummary.networkFee} />
               <MiniRow label="Route" value={swapSummary.route} />
