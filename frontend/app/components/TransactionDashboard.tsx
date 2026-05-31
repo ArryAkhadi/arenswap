@@ -31,10 +31,21 @@ import {
   type SupportedToken,
 } from '@/app/lib/tokens'
 
-type Mode = 'swap' | 'send' | 'batch' | 'portfolio' | 'approvals' | 'history'
+type Mode = 'bridge' | 'swap' | 'send' | 'batch' | 'portfolio' | 'approvals' | 'history'
 type TxStatus = 'idle' | 'review' | 'pending' | 'success' | 'verification_failed' | 'rejected' | 'error'
+type BridgeSourceNetwork = 'Ethereum' | 'Base' | 'Arbitrum' | 'Avalanche' | 'Polygon' | 'Optimism'
+
+interface BridgeSummaryState {
+  fromNetwork: BridgeSourceNetwork
+  toNetwork: 'Arc Testnet'
+  asset: 'USDC'
+  amount: string
+  destination: string
+  status: string
+}
 
 const MODE_LABELS: Array<{ value: Mode; label: string }> = [
+  { value: 'bridge', label: 'Bridge' },
   { value: 'swap', label: 'Swap' },
   { value: 'send', label: 'Send' },
   { value: 'batch', label: 'Batch' },
@@ -42,6 +53,8 @@ const MODE_LABELS: Array<{ value: Mode; label: string }> = [
   { value: 'approvals', label: 'Approvals' },
   { value: 'history', label: 'History' },
 ]
+
+const BRIDGE_SOURCE_NETWORKS: BridgeSourceNetwork[] = ['Ethereum', 'Base', 'Arbitrum', 'Avalanche', 'Polygon', 'Optimism']
 
 function nowMs(): number {
   return new Date().getTime()
@@ -264,6 +277,106 @@ function useTokenBalances() {
   }, [refresh])
 
   return { balances, loading, refresh }
+}
+
+function BridgeMode({ onSummaryChange }: { onSummaryChange?: (summary: BridgeSummaryState) => void }) {
+  const { isConnected } = useAccount()
+  const [fromNetwork, setFromNetwork] = useState<BridgeSourceNetwork>('Base')
+  const [amount, setAmount] = useState('')
+  const [destination, setDestination] = useState('')
+  const parsedAmount = Number(amount)
+  const hasAmount = Number.isFinite(parsedAmount) && parsedAmount > 0
+  const destinationIsValid = destination === '' || isAddress(destination)
+
+  useEffect(() => {
+    onSummaryChange?.({
+      fromNetwork,
+      toNetwork: 'Arc Testnet',
+      asset: 'USDC',
+      amount,
+      destination,
+      status: 'Ready for Bridge Kit integration',
+    })
+  }, [amount, destination, fromNetwork, onSummaryChange])
+
+  const bridgeButtonText = !hasAmount
+    ? 'Enter amount'
+    : !destinationIsValid || destination === ''
+      ? 'Enter destination'
+      : 'Bridge Kit integration coming soon'
+
+  return (
+    <UtilityCard title="Bridge to Arc">
+      <div className="space-y-4">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div className="space-y-1">
+            <FieldLabel>From network</FieldLabel>
+            <select
+              value={fromNetwork}
+              onChange={(event) => setFromNetwork(event.target.value as BridgeSourceNetwork)}
+              className="w-full rounded-xl border border-white/[0.08] bg-white/[0.06] px-3 py-2.5 text-sm font-semibold text-white outline-none hover:border-white/[0.14] focus:border-blue-500/50"
+            >
+              {BRIDGE_SOURCE_NETWORKS.map((network) => (
+                <option key={network} value={network} className="bg-[#111318] text-white">{network}</option>
+              ))}
+            </select>
+          </div>
+          <div className="space-y-1">
+            <FieldLabel>To network</FieldLabel>
+            <div className="rounded-xl border border-blue-400/18 bg-blue-500/[0.08] px-3 py-2.5 text-sm font-semibold text-blue-100">
+              Arc Testnet
+            </div>
+          </div>
+        </div>
+
+        <div className="space-y-1">
+          <FieldLabel>Asset</FieldLabel>
+          <div className="rounded-xl border border-white/[0.08] bg-white/[0.04] px-3 py-2.5 text-sm font-semibold text-white">
+            USDC
+          </div>
+        </div>
+
+        <div className="space-y-1">
+          <FieldLabel>Amount</FieldLabel>
+          <input
+            value={amount}
+            onChange={(event) => setAmount(event.target.value)}
+            type="number"
+            inputMode="decimal"
+            min="0"
+            step="any"
+            className="w-full rounded-xl border border-white/[0.08] bg-white/[0.03] px-4 py-3 text-xl font-semibold text-white outline-none focus:border-blue-500/50"
+            placeholder="0.00"
+          />
+        </div>
+
+        <div className="space-y-1">
+          <FieldLabel>Destination wallet</FieldLabel>
+          <input
+            value={destination}
+            onChange={(event) => setDestination(event.target.value)}
+            className="w-full rounded-xl border border-white/[0.08] bg-white/[0.03] px-4 py-3 text-sm text-white outline-none focus:border-blue-500/50"
+            placeholder="0x..."
+          />
+          {!destinationIsValid && <p className="text-xs text-amber-300/80">Enter a valid EVM address.</p>}
+        </div>
+
+        {!isConnected ? (
+          <ConnectButton.Custom>
+            {({ openConnectModal }) => (
+              <PrimaryButton onClick={openConnectModal}>Connect Wallet</PrimaryButton>
+            )}
+          </ConnectButton.Custom>
+        ) : (
+          <PrimaryButton disabled onClick={() => {}}>{bridgeButtonText}</PrimaryButton>
+        )}
+
+        <p className="rounded-xl border border-white/[0.06] bg-white/[0.02] px-4 py-3 text-xs leading-relaxed text-white/42">
+          Bridge execution is not enabled yet. No bridge transaction will be submitted from this screen.
+        </p>
+      </div>
+    </UtilityCard>
+  )
 }
 
 function SendMode({ presetToken }: { presetToken?: SupportedToken }) {
@@ -809,9 +922,11 @@ function MiniRow({ label, value }: { label: string; value: React.ReactNode }) {
 
 function DashboardSideRail({
   mode,
+  bridgeSummary,
   swapSummary,
 }: {
   mode: Mode
+  bridgeSummary: BridgeSummaryState | null
   swapSummary: SwapSummaryState | null
 }) {
   const { address, isConnected } = useAccount()
@@ -834,6 +949,19 @@ function DashboardSideRail({
 
   return (
     <aside className="hidden w-full xl:block">
+      {mode === 'bridge' && (
+        <SidePanel title="Bridge Summary">
+          <div className="space-y-1">
+            <MiniRow label="From network" value={bridgeSummary?.fromNetwork ?? 'Select network'} />
+            <MiniRow label="To network" value="Arc Testnet" />
+            <MiniRow label="Asset" value="USDC" />
+            <MiniRow label="Amount" value={bridgeSummary?.amount ? `${bridgeSummary.amount} USDC` : 'Enter amount'} />
+            <MiniRow label="Destination" value={bridgeSummary?.destination ? truncateHash(bridgeSummary.destination) : 'Set wallet'} />
+            <MiniRow label="Status" value={bridgeSummary?.status ?? 'Ready for Bridge Kit integration'} />
+          </div>
+        </SidePanel>
+      )}
+
       {mode === 'swap' && (
         <SidePanel title="Quote">
           {!swapSummary || !swapSummary.amountIn ? (
@@ -940,12 +1068,13 @@ function DashboardSideRail({
 export default function TransactionDashboard() {
   const [mode, setMode] = useState<Mode>('swap')
   const [presetToken, setPresetToken] = useState<SupportedToken>('USDC')
+  const [bridgeSummary, setBridgeSummary] = useState<BridgeSummaryState | null>(null)
   const [swapSummary, setSwapSummary] = useState<SwapSummaryState | null>(null)
 
   return (
     <div className="mx-auto grid w-full max-w-3xl grid-cols-1 gap-4 xl:max-w-7xl xl:grid-cols-[minmax(0,1fr)_420px] xl:items-start xl:gap-6">
       <div className="xl:col-span-2">
-        <div className="grid w-full grid-cols-3 gap-1.5 rounded-2xl border border-white/[0.09] bg-[#10131b]/78 p-1.5 shadow-xl shadow-black/25 backdrop-blur-xl sm:grid-cols-6">
+        <div className="grid w-full grid-cols-3 gap-1.5 rounded-2xl border border-white/[0.09] bg-[#10131b]/78 p-1.5 shadow-xl shadow-black/25 backdrop-blur-xl sm:grid-cols-7">
         {MODE_LABELS.map((item) => (
           <button
             key={item.value}
@@ -959,6 +1088,7 @@ export default function TransactionDashboard() {
         </div>
       </div>
       <div className="w-full">
+        {mode === 'bridge' && <BridgeMode onSummaryChange={setBridgeSummary} />}
         {mode === 'swap' && <CircleSwapBox onSummaryChange={setSwapSummary} />}
         {mode === 'send' && <SendMode presetToken={presetToken} />}
         {mode === 'batch' && <BatchMode />}
@@ -966,7 +1096,7 @@ export default function TransactionDashboard() {
         {mode === 'approvals' && <ApprovalsMode />}
         {mode === 'history' && <HistoryMode />}
       </div>
-      <DashboardSideRail mode={mode} swapSummary={swapSummary} />
+      <DashboardSideRail mode={mode} bridgeSummary={bridgeSummary} swapSummary={swapSummary} />
     </div>
   )
 }
