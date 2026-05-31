@@ -186,7 +186,7 @@ function PublicStatusTimeline({
 
 function UtilityCard({ title, children, right }: { title: string; children: React.ReactNode; right?: React.ReactNode }) {
   return (
-    <div className="w-full max-w-[34rem] overflow-hidden rounded-3xl border border-white/[0.09] bg-[#10131b]/88 shadow-[0_28px_100px_rgba(0,0,0,0.50),0_0_0_1px_rgba(147,197,253,0.035),inset_0_1px_0_rgba(255,255,255,0.035)] backdrop-blur-xl">
+    <div className="w-full overflow-hidden rounded-3xl border border-white/[0.09] bg-[#10131b]/88 shadow-[0_28px_100px_rgba(0,0,0,0.50),0_0_0_1px_rgba(147,197,253,0.035),inset_0_1px_0_rgba(255,255,255,0.035)] backdrop-blur-xl">
       <div className="p-5">
         <div className="mb-5 flex items-center justify-between gap-3">
           <h2 className="text-base font-semibold text-white">{title}</h2>
@@ -789,13 +789,112 @@ function TransactionList({ entries }: { entries: SwapHistoryEntry[] }) {
   )
 }
 
+function SidePanel({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="rounded-3xl border border-white/[0.08] bg-[#10131b]/72 p-4 shadow-xl shadow-black/25 backdrop-blur-xl">
+      <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-white/45">{title}</p>
+      {children}
+    </div>
+  )
+}
+
+function DashboardSideRail({ mode }: { mode: Mode }) {
+  const { address, isConnected } = useAccount()
+  const chainId = useChainId()
+  const { balances, loading } = useTokenBalances()
+  const { history } = useSwapHistory()
+  const recent = history.slice(0, 3)
+  const isArc = chainId === ARC_TESTNET_CHAIN_ID
+
+  return (
+    <aside className="hidden w-full space-y-3 lg:block">
+      <SidePanel title="Wallet">
+        <div className="space-y-3">
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-xs text-white/45">Status</span>
+            <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${isConnected ? 'border-emerald-400/25 bg-emerald-500/10 text-emerald-300' : 'border-white/[0.08] bg-white/[0.03] text-white/50'}`}>
+              {isConnected ? 'Connected' : 'Not connected'}
+            </span>
+          </div>
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-xs text-white/45">Network</span>
+            <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${isArc ? 'border-blue-400/25 bg-blue-500/10 text-blue-300' : 'border-amber-400/25 bg-amber-500/10 text-amber-300'}`}>
+              {isArc ? ARC_TESTNET_NAME : 'Switch required'}
+            </span>
+          </div>
+          {address && (
+            <div className="flex items-center justify-between gap-2 rounded-2xl border border-white/[0.06] bg-white/[0.025] px-3 py-2">
+              <a href={explorerAddressUrl(address)} target="_blank" rel="noopener noreferrer" className="min-w-0 truncate font-mono text-xs text-white/60 hover:text-white/80">
+                {truncateHash(address)}
+              </a>
+              <CopyButton value={address} />
+            </div>
+          )}
+        </div>
+      </SidePanel>
+
+      <SidePanel title="Balances">
+        {!isConnected ? (
+          <p className="text-xs leading-relaxed text-white/42">Connect wallet to show Arc Testnet balances.</p>
+        ) : (
+          <div className="space-y-2">
+            {SUPPORTED_TOKENS.map((token) => (
+              <div key={token} className="flex items-center justify-between gap-3 rounded-2xl border border-white/[0.06] bg-white/[0.025] px-3 py-2">
+                <span className="text-xs font-semibold text-white/65">{token}</span>
+                <span className="text-xs text-white/55">
+                  {loading ? 'Checking...' : balances[token] !== null ? formatTokenAmount(balances[token]!, token) : '--'}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </SidePanel>
+
+      <SidePanel title="Activity">
+        {recent.length === 0 ? (
+          <p className="text-xs leading-relaxed text-white/42">Recent swaps, sends, and approvals will appear here.</p>
+        ) : (
+          <div className="space-y-2">
+            {recent.map((entry) => {
+              const type = entry.type ?? 'swap'
+              const txHash = entry.txHash ?? entry.swapTxHash ?? entry.approvalTxHash ?? null
+              return (
+                <div key={entry.id} className="rounded-2xl border border-white/[0.06] bg-white/[0.025] px-3 py-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-semibold capitalize text-white/65">{type.replace('_', ' ')}</span>
+                    <span className="text-[10px] text-white/35">{String(entry.status).replace('_', ' ')}</span>
+                  </div>
+                  {txHash && (
+                    <a href={`/tx/${txHash}`} className="mt-1 block truncate text-[11px] text-blue-300/70 underline underline-offset-2">
+                      {truncateHash(txHash)}
+                    </a>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </SidePanel>
+
+      <div className="rounded-3xl border border-white/[0.06] bg-white/[0.025] px-4 py-3">
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-xs text-white/42">Active</span>
+          <span className="text-xs font-semibold text-white/65">{MODE_LABELS.find((item) => item.value === mode)?.label}</span>
+        </div>
+        <p className="mt-2 text-[11px] font-semibold uppercase tracking-wider text-white/32">Circle Swap Kit · Arc Testnet</p>
+      </div>
+    </aside>
+  )
+}
+
 export default function TransactionDashboard() {
   const [mode, setMode] = useState<Mode>('swap')
   const [presetToken, setPresetToken] = useState<SupportedToken>('USDC')
 
   return (
-    <div className="flex w-full flex-col items-center">
-      <div className="mb-2.5 flex w-full max-w-[34rem] flex-wrap gap-1.5 rounded-2xl border border-white/[0.09] bg-[#10131b]/72 p-1.5 shadow-xl shadow-black/25 backdrop-blur-xl">
+    <div className="grid w-full max-w-3xl grid-cols-1 gap-4 lg:max-w-6xl lg:grid-cols-[minmax(0,34rem)_minmax(18rem,1fr)] lg:items-start lg:gap-6">
+      <div className="lg:col-span-2">
+        <div className="flex w-full flex-wrap gap-1.5 rounded-2xl border border-white/[0.09] bg-[#10131b]/72 p-1.5 shadow-xl shadow-black/25 backdrop-blur-xl">
         {MODE_LABELS.map((item) => (
           <button
             key={item.value}
@@ -806,13 +905,17 @@ export default function TransactionDashboard() {
             {item.label}
           </button>
         ))}
+        </div>
       </div>
-      {mode === 'swap' && <CircleSwapBox />}
-      {mode === 'send' && <SendMode presetToken={presetToken} />}
-      {mode === 'batch' && <BatchMode />}
-      {mode === 'portfolio' && <PortfolioMode setMode={setMode} setPresetToken={setPresetToken} />}
-      {mode === 'approvals' && <ApprovalsMode />}
-      {mode === 'history' && <HistoryMode />}
+      <div className="w-full">
+        {mode === 'swap' && <CircleSwapBox />}
+        {mode === 'send' && <SendMode presetToken={presetToken} />}
+        {mode === 'batch' && <BatchMode />}
+        {mode === 'portfolio' && <PortfolioMode setMode={setMode} setPresetToken={setPresetToken} />}
+        {mode === 'approvals' && <ApprovalsMode />}
+        {mode === 'history' && <HistoryMode />}
+      </div>
+      <DashboardSideRail mode={mode} />
     </div>
   )
 }

@@ -137,7 +137,7 @@ export default function Home() {
           </div>
         </div>
 
-        <div className="mb-2.5 w-full max-w-[34rem] rounded-3xl border border-blue-400/[0.12] bg-blue-500/[0.045] p-4 shadow-xl shadow-black/20 backdrop-blur-xl">
+        <div className="mb-4 w-full max-w-3xl rounded-3xl border border-blue-400/[0.12] bg-blue-500/[0.045] p-4 shadow-xl shadow-black/20 backdrop-blur-xl lg:max-w-6xl">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="min-w-0">
               <p className="text-sm font-semibold text-white">Need testnet tokens?</p>
