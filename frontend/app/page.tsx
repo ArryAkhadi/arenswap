@@ -114,7 +114,7 @@ export default function Home() {
 
       <Navbar />
 
-      <main className="relative z-10 flex flex-1 flex-col items-center px-6 pb-12 pt-6 sm:pt-8 lg:px-8">
+      <main className="relative z-10 flex flex-1 flex-col items-center px-4 pb-12 pt-6 sm:px-6 sm:pt-8 lg:px-8">
         <div className="mb-5 text-center">
           <h1 className="mb-2 text-3xl font-bold tracking-tight text-white sm:text-4xl">
             Swap stablecoins on <span className="bg-gradient-to-r from-blue-400 to-indigo-400 bg-clip-text text-transparent">Arc Testnet</span>

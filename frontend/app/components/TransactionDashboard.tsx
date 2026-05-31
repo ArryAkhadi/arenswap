@@ -10,7 +10,7 @@ import {
   useSwitchChain,
   useWalletClient,
 } from 'wagmi'
-import CircleSwapBox from '@/app/components/CircleSwapBox'
+import CircleSwapBox, { type SwapSummaryState } from '@/app/components/CircleSwapBox'
 import { useAddressBook } from '@/app/hooks/useAddressBook'
 import { useSwapHistory, type SwapHistoryEntry, type TransactionType } from '@/app/hooks/useSwapHistory'
 import { hasWalletConnectProjectId } from '@/app/lib/walletEnv'
@@ -791,8 +791,8 @@ function TransactionList({ entries }: { entries: SwapHistoryEntry[] }) {
 
 function SidePanel({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div className="rounded-3xl border border-white/[0.08] bg-[#10131b]/72 p-4 shadow-xl shadow-black/25 backdrop-blur-xl">
-      <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-white/45">{title}</p>
+    <div className="rounded-3xl border border-white/[0.09] bg-[#10131b]/82 p-5 shadow-[0_24px_80px_rgba(0,0,0,0.38),inset_0_1px_0_rgba(255,255,255,0.035)] backdrop-blur-xl">
+      <p className="mb-4 text-xs font-semibold uppercase tracking-wider text-white/52">{title}</p>
       {children}
     </div>
   )
@@ -800,7 +800,7 @@ function SidePanel({ title, children }: { title: string; children: React.ReactNo
 
 function MiniRow({ label, value }: { label: string; value: React.ReactNode }) {
   return (
-    <div className="flex items-center justify-between gap-3 rounded-2xl border border-white/[0.06] bg-white/[0.025] px-3 py-2">
+    <div className="flex items-center justify-between gap-3 border-b border-white/[0.06] py-2 last:border-b-0">
       <span className="text-xs text-white/45">{label}</span>
       <span className="min-w-0 truncate text-right text-xs font-semibold text-white/65">{value}</span>
     </div>
@@ -809,17 +809,17 @@ function MiniRow({ label, value }: { label: string; value: React.ReactNode }) {
 
 function DashboardSideRail({
   mode,
-  setMode,
-  setPresetToken,
+  swapSummary,
 }: {
   mode: Mode
-  setMode: (mode: Mode) => void
-  setPresetToken: (token: SupportedToken) => void
+  swapSummary: SwapSummaryState | null
 }) {
   const { address, isConnected } = useAccount()
   const chainId = useChainId()
+  const { balances, loading, refresh } = useTokenBalances()
   const { history } = useSwapHistory()
   const recent = history.slice(0, 3)
+  const latest = recent[0]
   const isArc = chainId === ARC_TESTNET_CHAIN_ID
   const statusPill = (
     <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${isConnected ? 'border-emerald-400/25 bg-emerald-500/10 text-emerald-300' : 'border-white/[0.08] bg-white/[0.03] text-white/50'}`}>
@@ -832,45 +832,33 @@ function DashboardSideRail({
     </span>
   )
 
-  const footer = (
-      <div className="rounded-3xl border border-white/[0.06] bg-white/[0.025] px-4 py-3">
-        <div className="flex items-center justify-between gap-3">
-          <span className="text-xs text-white/42">Active</span>
-          <span className="text-xs font-semibold text-white/65">{MODE_LABELS.find((item) => item.value === mode)?.label}</span>
-        </div>
-        <p className="mt-2 text-[11px] font-semibold uppercase tracking-wider text-white/32">Circle Swap Kit &middot; Arc Testnet</p>
-      </div>
-  )
-
   return (
-    <aside className="hidden w-full space-y-3 lg:block">
+    <aside className="hidden w-full xl:block">
       {mode === 'swap' && (
-        <>
-          <SidePanel title="Swap Summary">
-            <div className="space-y-2">
+        <SidePanel title="Quote">
+          {!swapSummary || !swapSummary.amountIn ? (
+            <p className="text-sm text-white/50">Enter an amount to preview quote</p>
+          ) : (
+            <div className="space-y-1">
               <MiniRow label="Wallet" value={statusPill} />
-              <MiniRow label="Network" value={networkPill} />
-              <MiniRow label="Quote" value="Shown after amount" />
-              <MiniRow label="Fee" value="Wallet estimate" />
+              <MiniRow label="Rate" value={swapSummary.rate ? `1 ${swapSummary.tokenIn} = ${swapSummary.rate} ${swapSummary.tokenOut}` : 'Pending quote'} />
+              <MiniRow label="Min received" value={swapSummary.minReceived ? `${swapSummary.minReceived} ${swapSummary.tokenOut}` : 'Pending quote'} />
+              <MiniRow label="Slippage" value={`${swapSummary.slippagePercent.toLocaleString(undefined, { maximumFractionDigits: 2 })}%`} />
+              <MiniRow label="Fee" value={swapSummary.networkFee} />
+              <MiniRow label="Route" value={swapSummary.route} />
+              <MiniRow label="Status" value={swapSummary.status} />
             </div>
-          </SidePanel>
-          <SidePanel title="Quote Preview">
-            <div className="grid grid-cols-2 gap-2">
-              <MiniRow label="Rate" value="In swap card" />
-              <MiniRow label="Min received" value="In swap card" />
-              <MiniRow label="Slippage" value="Configurable" />
-              <MiniRow label="Status" value="On-chain quote" />
-            </div>
-          </SidePanel>
-        </>
+          )}
+        </SidePanel>
       )}
 
       {mode === 'send' && (
-        <SidePanel title="Send Summary">
-          <div className="space-y-2">
+        <SidePanel title="Transfer Review">
+          <div className="space-y-1">
             <MiniRow label="Recipient" value="Set in form" />
             <MiniRow label="Token" value="Selected in form" />
             <MiniRow label="Amount" value="Entered in form" />
+            <MiniRow label="Balance after" value="Calculated after review" />
             <MiniRow label="Network fee" value="Wallet estimate" />
             <MiniRow label="Status" value={isConnected ? 'Ready to review' : 'Connect wallet'} />
           </div>
@@ -878,84 +866,73 @@ function DashboardSideRail({
       )}
 
       {mode === 'batch' && (
-        <SidePanel title="Batch Summary">
-          <div className="space-y-2">
+        <SidePanel title="Batch Review">
+          <div className="space-y-1">
             <MiniRow label="Recipients" value="Up to 5" />
             <MiniRow label="Total" value="Calculated in form" />
             <MiniRow label="Token" value="Selected in form" />
-            <MiniRow label="Fee" value="One estimate per tx" />
+            <MiniRow label="Transactions" value="One per recipient" />
+            <MiniRow label="Fee estimate" value="Wallet estimate per tx" />
+            <MiniRow label="Validation" value={isConnected ? 'Check form rows' : 'Connect wallet'} />
           </div>
         </SidePanel>
       )}
 
       {mode === 'portfolio' && (
-        <>
-          <SidePanel title="Wallet Details">
-            <div className="space-y-2">
+        <SidePanel title="Wallet Overview">
+            <div className="space-y-1">
               <MiniRow label="Status" value={statusPill} />
               <MiniRow label="Network" value={networkPill} />
+              <MiniRow label="Assets" value="3 testnet tokens" />
               {address && (
-                <div className="flex items-center justify-between gap-2 rounded-2xl border border-white/[0.06] bg-white/[0.025] px-3 py-2">
+                <div className="flex items-center justify-between gap-2 border-b border-white/[0.06] py-2">
                   <a href={explorerAddressUrl(address)} target="_blank" rel="noopener noreferrer" className="min-w-0 truncate font-mono text-xs text-white/60 hover:text-white/80">
                     {truncateHash(address)}
                   </a>
                   <CopyButton value={address} />
                 </div>
               )}
-            </div>
-          </SidePanel>
-          <SidePanel title="Quick Actions">
-            <div className="grid grid-cols-3 gap-2">
               {SUPPORTED_TOKENS.map((token) => (
-                <button key={token} type="button" onClick={() => { setPresetToken(token); setMode('swap') }} className="rounded-xl border border-white/[0.08] px-2 py-2 text-xs font-semibold text-white/50 hover:text-white/80">
-                  {token}
-                </button>
+                <MiniRow key={token} label={token} value={loading ? 'Checking...' : balances[token] !== null ? formatTokenAmount(balances[token]!, token) : '--'} />
               ))}
+              <button type="button" onClick={refresh} disabled={loading || !isConnected} className="mt-3 w-full rounded-2xl border border-white/[0.08] bg-white/[0.04] py-2 text-xs font-semibold text-white/55 hover:text-white/80 disabled:cursor-not-allowed disabled:opacity-50">
+                {loading ? 'Refreshing...' : 'Refresh'}
+              </button>
             </div>
           </SidePanel>
-        </>
       )}
 
       {mode === 'approvals' && (
-        <SidePanel title="Approval Summary">
-          <div className="space-y-2">
+        <SidePanel title="Risk Summary">
+          <div className="space-y-1">
             <MiniRow label="Spender" value={truncateHash(CIRCLE_SWAP_ADAPTER)} />
-            <MiniRow label="Scope" value="Known swap spender" />
-            <MiniRow label="Tokens" value="USDC, EURC, cirBTC" />
-            <MiniRow label="Action" value="Revoke to zero" />
+            <MiniRow label="Approved tokens" value="Shown in list" />
+            <MiniRow label="Scope" value="Circle swap adapter" />
+            <MiniRow label="Hint" value="Revoke unused approvals" />
+            <MiniRow label="Refresh" value="Use left panel" />
           </div>
         </SidePanel>
       )}
 
       {mode === 'history' && (
-        <SidePanel title="Recent Summary">
-          {recent.length === 0 ? (
+        <SidePanel title="Transaction Detail">
+          {!latest ? (
             <p className="text-xs leading-relaxed text-white/42">No local transaction records yet.</p>
           ) : (
-            <div className="space-y-2">
-              {recent.map((entry) => {
-                const type = entry.type ?? 'swap'
-                const txHash = entry.txHash ?? entry.swapTxHash ?? entry.approvalTxHash ?? null
-                return (
-                  <div key={entry.id} className="rounded-2xl border border-white/[0.06] bg-white/[0.025] px-3 py-2">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-xs font-semibold capitalize text-white/65">{type.replace('_', ' ')}</span>
-                      <span className="text-[10px] text-white/35">{String(entry.status).replace('_', ' ')}</span>
-                    </div>
-                    {txHash && (
-                      <a href={`/tx/${txHash}`} className="mt-1 block truncate text-[11px] text-blue-300/70 underline underline-offset-2">
-                        {truncateHash(txHash)}
-                      </a>
-                    )}
-                  </div>
-                )
-              })}
+            <div className="space-y-1">
+              <MiniRow label="Type" value={(latest.type ?? 'swap').replace('_', ' ')} />
+              <MiniRow label="Status" value={String(latest.status).replace('_', ' ')} />
+              <MiniRow label="Token" value={latest.token ?? latest.tokenIn ?? '--'} />
+              <MiniRow label="Amount" value={latest.amount ?? latest.amountIn ?? '--'} />
+              {(latest.txHash ?? latest.swapTxHash ?? latest.approvalTxHash) && (
+                <a href={`/tx/${latest.txHash ?? latest.swapTxHash ?? latest.approvalTxHash}`} className="mt-3 block rounded-2xl border border-blue-400/20 bg-blue-500/[0.08] px-3 py-2 text-center text-xs font-semibold text-blue-200 hover:text-blue-100">
+                  Open receipt
+                </a>
+              )}
             </div>
           )}
         </SidePanel>
       )}
-
-      {footer}
     </aside>
   )
 }
@@ -963,17 +940,18 @@ function DashboardSideRail({
 export default function TransactionDashboard() {
   const [mode, setMode] = useState<Mode>('swap')
   const [presetToken, setPresetToken] = useState<SupportedToken>('USDC')
+  const [swapSummary, setSwapSummary] = useState<SwapSummaryState | null>(null)
 
   return (
-    <div className="grid w-full max-w-3xl grid-cols-1 gap-4 lg:max-w-7xl lg:grid-cols-[minmax(0,36rem)_minmax(20rem,1fr)] lg:items-start lg:gap-8">
-      <div className="lg:col-span-2">
-        <div className="flex w-full flex-wrap gap-1.5 rounded-2xl border border-white/[0.09] bg-[#10131b]/72 p-1.5 shadow-xl shadow-black/25 backdrop-blur-xl">
+    <div className="mx-auto grid w-full max-w-3xl grid-cols-1 gap-4 xl:max-w-7xl xl:grid-cols-[minmax(0,1fr)_420px] xl:items-start xl:gap-6">
+      <div className="xl:col-span-2">
+        <div className="grid w-full grid-cols-3 gap-1.5 rounded-2xl border border-white/[0.09] bg-[#10131b]/78 p-1.5 shadow-xl shadow-black/25 backdrop-blur-xl sm:grid-cols-6">
         {MODE_LABELS.map((item) => (
           <button
             key={item.value}
             type="button"
             onClick={() => setMode(item.value)}
-            className={`flex-1 rounded-xl px-2.5 py-2 text-xs font-semibold transition-colors ${mode === item.value ? 'bg-gradient-to-r from-blue-500/25 to-indigo-500/25 text-blue-50 shadow-sm shadow-blue-500/10' : 'text-white/38 hover:bg-white/[0.05] hover:text-white/72'}`}
+            className={`rounded-xl px-2.5 py-2 text-xs font-semibold transition-colors ${mode === item.value ? 'bg-gradient-to-r from-blue-500/40 to-indigo-500/35 text-blue-50 shadow-sm shadow-blue-500/15' : 'text-white/55 hover:bg-white/[0.06] hover:text-white/82'}`}
           >
             {item.label}
           </button>
@@ -981,14 +959,14 @@ export default function TransactionDashboard() {
         </div>
       </div>
       <div className="w-full">
-        {mode === 'swap' && <CircleSwapBox />}
+        {mode === 'swap' && <CircleSwapBox onSummaryChange={setSwapSummary} />}
         {mode === 'send' && <SendMode presetToken={presetToken} />}
         {mode === 'batch' && <BatchMode />}
         {mode === 'portfolio' && <PortfolioMode setMode={setMode} setPresetToken={setPresetToken} />}
         {mode === 'approvals' && <ApprovalsMode />}
         {mode === 'history' && <HistoryMode />}
       </div>
-      <DashboardSideRail mode={mode} setMode={setMode} setPresetToken={setPresetToken} />
+      <DashboardSideRail mode={mode} swapSummary={swapSummary} />
     </div>
   )
 }

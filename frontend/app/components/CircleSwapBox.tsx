@@ -38,6 +38,19 @@ const NATIVE_TOKEN_ADDRESS = '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE'
 const SUPPORTED_TOKENS = ['USDC', 'EURC', 'cirBTC'] as const
 type SupportedToken = (typeof SUPPORTED_TOKENS)[number]
 
+export interface SwapSummaryState {
+  tokenIn: SupportedToken
+  tokenOut: SupportedToken
+  amountIn: string
+  rate: string | null
+  minReceived: string | null
+  slippagePercent: number
+  networkFee: string
+  route: string
+  status: string
+  balanceIn: string | null
+}
+
 const TOKEN_DECIMALS: Record<SupportedToken, number> = {
   USDC:   6,
   EURC:   6,
@@ -644,7 +657,7 @@ function StatusTimeline({ phase, swapTxHash }: { phase: Phase; swapTxHash: strin
 
 //  Main component ─
 
-export default function CircleSwapBox() {
+export default function CircleSwapBox({ onSummaryChange }: { onSummaryChange?: (summary: SwapSummaryState) => void }) {
   const { isConnected, address } = useAccount()
   const chainId = useChainId()
   const { data: walletClient } = useWalletClient()
@@ -939,6 +952,23 @@ export default function CircleSwapBox() {
       ? parsedCustomSlippage
       : 0.5
     : parseFloat(slippageMode)
+  const summaryRate = computeRate(amountIn, estimatedOut)
+  const summaryMinReceived = computeMinReceived(estimatedOut, slippagePercent)
+
+  useEffect(() => {
+    onSummaryChange?.({
+      tokenIn,
+      tokenOut,
+      amountIn,
+      rate: summaryRate,
+      minReceived: summaryMinReceived,
+      slippagePercent,
+      networkFee: 'Wallet estimate',
+      route: 'Circle Swap Kit',
+      status: isValidAmount(amountIn) ? (estimatedOut ? 'Quote ready' : isActive ? 'Preparing quote' : 'Preview pending') : 'Enter amount',
+      balanceIn,
+    })
+  }, [amountIn, balanceIn, estimatedOut, isActive, onSummaryChange, slippagePercent, summaryMinReceived, summaryRate, tokenIn, tokenOut])
 
   //  Reset 
 
@@ -1270,7 +1300,7 @@ export default function CircleSwapBox() {
         <ReviewModal tokenIn={tokenIn} tokenOut={tokenOut} amountIn={amountIn} address={address} onConfirm={handleConfirmedSwap} onCancel={handleModalCancel} />
       )}
 
-      <div className="flex w-full max-w-[34rem] flex-col items-center">
+      <div className="flex w-full flex-col items-center">
         <div className="relative w-full overflow-hidden rounded-3xl border border-white/[0.09] bg-[#10131b]/88 shadow-[0_28px_100px_rgba(0,0,0,0.50),0_0_0_1px_rgba(147,197,253,0.035),inset_0_1px_0_rgba(255,255,255,0.035)] backdrop-blur-xl">
           <div className="pointer-events-none absolute inset-x-0 top-0 h-px" style={{ background: 'linear-gradient(90deg, transparent, rgba(59,130,246,0.5) 40%, rgba(99,102,241,0.5) 60%, transparent)' }} aria-hidden="true" />
 
@@ -1345,7 +1375,9 @@ export default function CircleSwapBox() {
 
               <SlippageControl mode={slippageMode} customValue={customSlippage} onModeChange={setSlippageMode} onCustomChange={setCustomSlippage} />
 
-              <QuotePreview tokenIn={tokenIn} tokenOut={tokenOut} amountIn={amountIn} estimatedOut={estimatedOut} slippagePercent={slippagePercent} loading={isActive && !showResult} />
+              <div className="xl:hidden">
+                <QuotePreview tokenIn={tokenIn} tokenOut={tokenOut} amountIn={amountIn} estimatedOut={estimatedOut} slippagePercent={slippagePercent} loading={isActive && !showResult} />
+              </div>
 
               {(isActive || showResult || phase === 'error') && <StatusTimeline phase={phase} swapTxHash={swapTxHash} />}
 
@@ -1419,11 +1451,6 @@ export default function CircleSwapBox() {
           </div>
         </div>
 
-        <p className="mt-4 text-center text-xs text-white/45">
-          Powered by{' '}
-          <a href="https://developers.circle.com" target="_blank" rel="noopener noreferrer" className="text-white/60 underline-offset-2 hover:text-white/80 hover:underline">Circle Swap Kit</a>
-          {' '}&middot; Arc Testnet
-        </p>
       </div>
     </>
   )
