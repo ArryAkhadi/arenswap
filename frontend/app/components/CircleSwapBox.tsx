@@ -44,6 +44,10 @@ const TOKEN_DECIMALS: Record<SupportedToken, number> = {
   cirBTC: 8,
 }
 
+const SLIPPAGE_PRESETS = ['0.1', '0.5', '1'] as const
+const SLIPPAGE_CHOICES = [...SLIPPAGE_PRESETS, 'custom'] as const
+type SlippageMode = (typeof SLIPPAGE_PRESETS)[number] | 'custom'
+
 // Canonical ERC-20 addresses on Arc Testnet (from Circle SDK token registry)
 const TOKEN_ADDRESSES: Record<SupportedToken, `0x${string}`> = {
   USDC:   '0x3600000000000000000000000000000000000000',
@@ -324,6 +328,19 @@ function computeRate(amountIn: string, estimatedOut: string | null): string | nu
   return (output / input).toLocaleString(undefined, { maximumFractionDigits: 8 })
 }
 
+function formatQuoteNumber(value: number): string {
+  if (!isFinite(value) || value <= 0) return 'Pending quote'
+  if (value < 0.0001) return '< 0.0001'
+  return value.toLocaleString(undefined, { maximumFractionDigits: 8 })
+}
+
+function computeMinReceived(estimatedOut: string | null, slippagePercent: number): string | null {
+  if (!estimatedOut || !isFinite(slippagePercent)) return null
+  const output = parseFloat(estimatedOut.replace(/,/g, ''))
+  if (!isFinite(output) || output <= 0) return null
+  return formatQuoteNumber(output * (1 - slippagePercent / 100))
+}
+
 function parseAmountToBaseUnits(value: string, decimals: number): bigint | null {
   const trimmed = value.trim()
   if (!/^\d+(\.\d+)?$/.test(trimmed)) return null
@@ -367,11 +384,11 @@ function TokenSelect({
   balance, balanceLoading, onMax,
 }: TokenSelectProps) {
   return (
-    <div className="flex flex-col gap-1">
+    <div className="flex flex-col gap-1.5">
       <div className="flex items-center justify-between">
-        <label className="text-xs font-medium uppercase tracking-wider text-white/40">{label}</label>
+        <label className="text-xs font-semibold uppercase tracking-wider text-white/50">{label}</label>
         {balance !== undefined && (
-          <span className="text-xs text-white/30">
+          <span className="text-xs text-white/45">
             {balanceLoading
               ? <span className="opacity-50">loading\u2026</span>
               : balance !== null
@@ -385,7 +402,7 @@ function TokenSelect({
           value={value}
           onChange={(e) => onChange(e.target.value as SupportedToken)}
           disabled={disabled}
-          className="flex-1 rounded-xl border border-white/[0.08] bg-white/[0.06] px-3 py-2.5 text-sm font-semibold text-white outline-none transition-colors hover:border-white/[0.14] focus:border-blue-500/50 disabled:cursor-not-allowed disabled:opacity-50"
+          className="flex-1 rounded-2xl border border-white/[0.09] bg-white/[0.055] px-3.5 py-3 text-sm font-semibold text-white outline-none transition-colors hover:border-white/[0.16] hover:bg-white/[0.075] focus:border-blue-400/55 focus:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-60"
           aria-label={`Select ${label} token`}
         >
           {SUPPORTED_TOKENS.filter((t) => t !== exclude).map((t) => (
@@ -397,7 +414,7 @@ function TokenSelect({
             type="button"
             onClick={onMax}
             disabled={disabled || balance === null || balance === undefined}
-            className="rounded-xl border border-white/[0.08] bg-white/[0.06] px-3 py-2 text-xs font-semibold text-white/60 transition-colors hover:border-white/[0.14] hover:text-white/90 disabled:cursor-not-allowed disabled:opacity-30"
+            className="rounded-2xl border border-white/[0.09] bg-white/[0.055] px-3 py-2 text-xs font-semibold text-white/65 transition-colors hover:border-white/[0.16] hover:bg-white/[0.075] hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
             aria-label="Use maximum balance"
           >
             Max
@@ -466,32 +483,101 @@ function QuotePreview({
   tokenOut,
   amountIn,
   estimatedOut,
+  slippagePercent,
+  loading,
 }: {
   tokenIn: SupportedToken
   tokenOut: SupportedToken
   amountIn: string
   estimatedOut: string | null
+  slippagePercent: number
+  loading: boolean
 }) {
   const rate = computeRate(amountIn, estimatedOut)
   const hasAmount = isValidAmount(amountIn)
+  const minReceived = computeMinReceived(estimatedOut, slippagePercent)
 
   return (
-    <div className="rounded-2xl border border-white/[0.06] bg-white/[0.025] p-4">
+    <div className="rounded-2xl border border-white/[0.075] bg-white/[0.03] p-4 shadow-inner shadow-white/[0.015]">
       <div className="mb-3 flex items-center justify-between gap-3">
-        <p className="text-xs font-semibold uppercase tracking-wider text-white/35">Quote preview</p>
-        <span className="rounded-full border border-white/[0.08] px-2 py-0.5 text-[10px] font-medium text-white/40">{ARC_TESTNET_NAME}</span>
+        <p className="text-xs font-semibold uppercase tracking-wider text-white/50">Quote preview</p>
+        {loading ? (
+          <span className="flex items-center gap-1.5 rounded-full border border-blue-400/20 bg-blue-500/[0.08] px-2 py-0.5 text-[10px] font-semibold text-blue-200/80">
+            <span className="h-2 w-2 animate-spin rounded-full border border-blue-300/25 border-t-blue-200" />
+            Loading
+          </span>
+        ) : (
+          <span className="rounded-full border border-white/[0.08] px-2 py-0.5 text-[10px] font-medium text-white/50">{ARC_TESTNET_NAME}</span>
+        )}
       </div>
       {!hasAmount ? (
-        <p className="text-xs leading-relaxed text-white/38">Enter an amount to preview your quote.</p>
+        <p className="text-xs leading-relaxed text-white/50">Enter amount to preview quote</p>
       ) : (
-        <div className="space-y-2 text-xs">
-          <ModalRow label="Pair" value={`${tokenIn} -> ${tokenOut}`} highlight />
-          <ModalRow label="Input" value={`${amountIn} ${tokenIn}`} />
-          <ModalRow label="Estimated output" value={estimatedOut ? `${estimatedOut} ${tokenOut}` : 'Final quote will be verified during swap preparation.'} />
-          <ModalRow label="Exchange rate" value={rate ? `1 ${tokenIn} = ${rate} ${tokenOut}` : 'Final quote will be verified during swap preparation.'} />
-          <ModalRow label="Expected network" value={ARC_TESTNET_NAME} />
+        <div className="grid grid-cols-2 gap-2 text-xs">
+          <div className="rounded-xl border border-white/[0.06] bg-black/10 px-3 py-2">
+            <p className="text-white/38">Rate</p>
+            <p className="mt-1 truncate font-semibold text-white/75">{rate ? `1 ${tokenIn} = ${rate} ${tokenOut}` : 'Pending quote'}</p>
+          </div>
+          <div className="rounded-xl border border-white/[0.06] bg-black/10 px-3 py-2">
+            <p className="text-white/38">Min received</p>
+            <p className="mt-1 truncate font-semibold text-white/75">{minReceived ? `${minReceived} ${tokenOut}` : 'Pending quote'}</p>
+          </div>
+          <div className="rounded-xl border border-white/[0.06] bg-black/10 px-3 py-2">
+            <p className="text-white/38">Slippage</p>
+            <p className="mt-1 font-semibold text-white/75">{slippagePercent.toLocaleString(undefined, { maximumFractionDigits: 2 })}%</p>
+          </div>
+          <div className="rounded-xl border border-white/[0.06] bg-black/10 px-3 py-2">
+            <p className="text-white/38">Network fee</p>
+            <p className="mt-1 font-semibold text-white/75">Wallet estimate</p>
+          </div>
         </div>
       )}
+    </div>
+  )
+}
+
+function SlippageControl({
+  mode,
+  customValue,
+  onModeChange,
+  onCustomChange,
+}: {
+  mode: SlippageMode
+  customValue: string
+  onModeChange: (mode: SlippageMode) => void
+  onCustomChange: (value: string) => void
+}) {
+  return (
+    <div className="rounded-2xl border border-white/[0.06] bg-white/[0.02] p-3">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <p className="text-xs font-semibold uppercase tracking-wider text-white/50">Slippage</p>
+        {mode === 'custom' && (
+          <input
+            value={customValue}
+            onChange={(event) => onCustomChange(event.target.value)}
+            inputMode="decimal"
+            className="w-20 rounded-lg border border-white/[0.08] bg-white/[0.04] px-2 py-1 text-right text-xs font-semibold text-white outline-none focus:border-blue-400/50"
+            placeholder="0.5"
+            aria-label="Custom slippage percent"
+          />
+        )}
+      </div>
+      <div className="grid grid-cols-4 gap-1.5">
+        {SLIPPAGE_CHOICES.map((item) => (
+          <button
+            key={item}
+            type="button"
+            onClick={() => onModeChange(item)}
+            className={`rounded-xl border px-2 py-1.5 text-xs font-semibold transition-colors ${
+              mode === item
+                ? 'border-blue-400/35 bg-blue-500/[0.14] text-blue-100'
+                : 'border-white/[0.07] bg-white/[0.025] text-white/48 hover:border-white/[0.13] hover:text-white/75'
+            }`}
+          >
+            {item === 'custom' ? 'Custom' : `${item}%`}
+          </button>
+        ))}
+      </div>
     </div>
   )
 }
@@ -569,6 +655,8 @@ export default function CircleSwapBox() {
   const [tokenIn, setTokenIn] = useState<SupportedToken>('USDC')
   const [tokenOut, setTokenOut] = useState<SupportedToken>('EURC')
   const [amountIn, setAmountIn] = useState('')
+  const [slippageMode, setSlippageMode] = useState<SlippageMode>('0.5')
+  const [customSlippage, setCustomSlippage] = useState('0.5')
 
   const [phase, setPhase] = useState<Phase>('idle')
   const [error, setError] = useState<string | null>(null)
@@ -845,6 +933,12 @@ export default function CircleSwapBox() {
 
   const validationError = getValidationError()
   const canOpenModal = validationError === null && !isActive
+  const parsedCustomSlippage = parseFloat(customSlippage)
+  const slippagePercent = slippageMode === 'custom'
+    ? isFinite(parsedCustomSlippage) && parsedCustomSlippage >= 0
+      ? parsedCustomSlippage
+      : 0.5
+    : parseFloat(slippageMode)
 
   //  Reset 
 
@@ -1181,7 +1275,7 @@ export default function CircleSwapBox() {
           <div className="pointer-events-none absolute inset-x-0 top-0 h-px" style={{ background: 'linear-gradient(90deg, transparent, rgba(59,130,246,0.5) 40%, rgba(99,102,241,0.5) 60%, transparent)' }} aria-hidden="true" />
 
           <div className="p-5">
-            <div className="mb-5 flex items-center justify-between">
+            <div className="mb-4 flex items-center justify-between">
               <h2 className="text-base font-semibold text-white">Swap</h2>
               <span className="rounded-full border border-blue-500/30 bg-blue-500/10 px-2.5 py-0.5 text-xs font-medium text-blue-400">Arc Testnet</span>
             </div>
@@ -1211,15 +1305,15 @@ export default function CircleSwapBox() {
               </div>
             )}
 
-            <div className="flex flex-col gap-4">
+            <div className="flex flex-col gap-3.5">
               <div className="grid grid-cols-[1fr_auto_1fr] items-end gap-2 sm:gap-3">
-                <TokenSelect label="From" value={tokenIn} onChange={(v) => { setTokenIn(v); resetForm() }} exclude={tokenOut} disabled={isActive} balance={isConnected && chainId === ARC_TESTNET_CHAIN_ID ? balanceIn : undefined} balanceLoading={balanceLoading} onMax={isConnected && chainId === ARC_TESTNET_CHAIN_ID ? handleMax : undefined} />
+                <TokenSelect label="From" value={tokenIn} onChange={(v) => { setTokenIn(v); resetForm() }} exclude={tokenOut} disabled={isActive} />
                 <button
                   type="button"
                   onClick={handleReversePair}
                   disabled={isActive}
                   aria-label="Reverse token pair"
-                  className="mb-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-white/[0.08] bg-white/[0.05] text-white/45 transition-colors hover:border-white/[0.14] hover:text-white/80 disabled:cursor-not-allowed disabled:opacity-30"
+                  className="mb-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border border-white/[0.09] bg-white/[0.055] text-white/58 shadow-inner shadow-white/[0.015] transition-colors hover:border-blue-300/25 hover:bg-blue-500/[0.08] hover:text-blue-100 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
                     <path fillRule="evenodd" d="M13.293 3.293a1 1 0 011.414 0l3 3a1 1 0 010 1.414l-3 3a1 1 0 11-1.414-1.414L14.586 8H4a1 1 0 010-2h10.586l-1.293-1.293a1 1 0 010-1.414zM6.707 16.707a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414l3-3a1 1 0 011.414 1.414L5.414 12H16a1 1 0 110 2H5.414l1.293 1.293a1 1 0 010 1.414z" clipRule="evenodd" />
@@ -1228,19 +1322,37 @@ export default function CircleSwapBox() {
                 <TokenSelect label="To" value={tokenOut} onChange={(v) => { setTokenOut(v); resetForm() }} exclude={tokenIn} disabled={isActive} balance={isConnected && chainId === ARC_TESTNET_CHAIN_ID ? balanceOut : undefined} balanceLoading={balanceLoading} />
               </div>
 
-              <div className="flex flex-col gap-1">
-                <label htmlFor="circle-amount-in" className="text-xs font-medium uppercase tracking-wider text-white/40">Amount</label>
-                <input id="circle-amount-in" type="number" inputMode="decimal" placeholder="0.00" value={amountIn} onChange={(e) => { setAmountIn(e.target.value); resetForm() }} onKeyDown={(e) => { if (e.key === 'Enter') e.preventDefault() }} disabled={isActive} min="0" step="any" aria-label={`Amount of ${tokenIn} to swap`} className="rounded-xl border border-white/[0.08] bg-white/[0.03] px-4 py-3 text-xl font-semibold text-white outline-none placeholder:text-white/20 transition-colors hover:border-white/[0.14] focus:border-blue-500/50 focus:bg-white/[0.05] disabled:cursor-not-allowed disabled:opacity-50 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none" />
+              <div className="flex flex-col gap-1.5">
+                <div className="flex items-center justify-between gap-3">
+                  <label htmlFor="circle-amount-in" className="text-xs font-semibold uppercase tracking-wider text-white/50">Amount</label>
+                  {isConnected && chainId === ARC_TESTNET_CHAIN_ID && (
+                    <div className="flex items-center gap-2 text-xs text-white/48">
+                      {balanceLoading ? (
+                        <span>Balance loading...</span>
+                      ) : balanceIn !== null ? (
+                        <>
+                          <span>Balance {balanceIn} {tokenIn}</span>
+                          <button type="button" onClick={handleMax} disabled={isActive} className="font-semibold text-blue-200/85 hover:text-blue-100 disabled:cursor-not-allowed disabled:text-white/35">MAX</button>
+                        </>
+                      ) : (
+                        <span>Balance unavailable</span>
+                      )}
+                    </div>
+                  )}
+                </div>
+                <input id="circle-amount-in" type="number" inputMode="decimal" placeholder="0.00" value={amountIn} onChange={(e) => { setAmountIn(e.target.value); resetForm() }} onKeyDown={(e) => { if (e.key === 'Enter') e.preventDefault() }} disabled={isActive} min="0" step="any" aria-label={`Amount of ${tokenIn} to swap`} className="rounded-2xl border border-white/[0.09] bg-white/[0.04] px-4 py-4 text-2xl font-semibold text-white outline-none placeholder:text-white/30 shadow-inner shadow-white/[0.015] transition-colors hover:border-white/[0.16] hover:bg-white/[0.055] focus:border-blue-400/55 focus:bg-white/[0.065] disabled:cursor-not-allowed disabled:opacity-65 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none" />
               </div>
 
-              <QuotePreview tokenIn={tokenIn} tokenOut={tokenOut} amountIn={amountIn} estimatedOut={estimatedOut} />
+              <SlippageControl mode={slippageMode} customValue={customSlippage} onModeChange={setSlippageMode} onCustomChange={setCustomSlippage} />
+
+              <QuotePreview tokenIn={tokenIn} tokenOut={tokenOut} amountIn={amountIn} estimatedOut={estimatedOut} slippagePercent={slippagePercent} loading={isActive && !showResult} />
 
               {(isActive || showResult || phase === 'error') && <StatusTimeline phase={phase} swapTxHash={swapTxHash} />}
 
               {!isActive && isConnected && chainId === ARC_TESTNET_CHAIN_ID && (
                 <div className="flex items-center justify-between">
-                  {balanceStale && <p className="text-xs text-white/30">Swap confirmed. Balance may take a few seconds to update.</p>}
-                  <button type="button" onClick={() => fetchBalances(tokenIn, tokenOut)} disabled={balanceLoading} className="ml-auto flex items-center gap-1.5 text-xs text-white/25 transition-colors hover:text-white/50 disabled:opacity-30" aria-label="Refresh balances">
+                  {balanceStale && <p className="text-xs text-white/50">Swap confirmed. Balance may take a few seconds to update.</p>}
+                  <button type="button" onClick={() => fetchBalances(tokenIn, tokenOut)} disabled={balanceLoading} className="ml-auto flex items-center gap-1.5 text-xs text-white/42 transition-colors hover:text-white/70 disabled:opacity-50" aria-label="Refresh balances">
                     <svg className={`h-3 w-3 ${balanceLoading ? 'animate-spin' : ''}`} viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fillRule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clipRule="evenodd" /></svg>
                     Refresh
                   </button>
@@ -1257,7 +1369,7 @@ export default function CircleSwapBox() {
               </button>
 
               {validationError && !error && isConnected && chainId === ARC_TESTNET_CHAIN_ID && (
-                <p className="text-center text-xs text-white/30">{validationError}</p>
+                <p className="text-center text-xs text-white/50">{validationError}</p>
               )}
             </div>
 
@@ -1307,10 +1419,10 @@ export default function CircleSwapBox() {
           </div>
         </div>
 
-        <p className="mt-6 text-center text-xs text-white/45">
+        <p className="mt-4 text-center text-xs text-white/45">
           Powered by{' '}
           <a href="https://developers.circle.com" target="_blank" rel="noopener noreferrer" className="text-white/60 underline-offset-2 hover:text-white/80 hover:underline">Circle Swap Kit</a>
-          {' '}&middot; Arc Testnet only
+          {' '}&middot; Arc Testnet
         </p>
       </div>
     </>

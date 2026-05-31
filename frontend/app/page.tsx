@@ -1,6 +1,7 @@
 'use client'
 
 import { ConnectButton } from '@rainbow-me/rainbowkit'
+import Image from 'next/image'
 import Link from 'next/link'
 import TransactionDashboard from '@/app/components/TransactionDashboard'
 
@@ -63,26 +64,29 @@ function HeaderConnectButton() {
 
 function Navbar() {
   return (
-    <header className="sticky top-0 z-50 w-full border-b border-white/[0.07] bg-[#080a10]/75 backdrop-blur-xl">
+    <header className="sticky top-0 z-50 w-full border-b border-white/[0.09] bg-[#080a10]/80 backdrop-blur-xl">
       <div className="mx-auto flex min-h-16 max-w-6xl items-center justify-between gap-3 px-3 py-3 sm:h-16 sm:px-6 sm:py-0">
         <Link href="/" className="flex shrink-0 items-center gap-2.5" aria-label="Arenswap home">
-          <img
+          <Image
             src="/favicon.ico"
             alt="Arenswap logo"
+            width={32}
+            height={32}
+            unoptimized
             className="h-8 w-8 shrink-0 rounded-lg object-cover"
           />
           <span className="hidden text-lg font-semibold tracking-tight text-white sm:inline">Arenswap</span>
         </Link>
         <div className="flex min-w-0 flex-1 items-center justify-end gap-2 sm:flex-none sm:gap-3">
-          <div className="hidden items-center gap-1.5 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-3 py-1 sm:flex">
+          <div className="hidden items-center gap-1.5 rounded-full border border-emerald-400/30 bg-emerald-500/[0.11] px-3 py-1 sm:flex">
             <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" />
-            <span className="text-xs font-medium text-emerald-400">Arc Testnet</span>
+            <span className="text-xs font-semibold text-emerald-300">Arc Testnet</span>
           </div>
           <a
             href="https://faucet.circle.com/"
             target="_blank"
             rel="noopener noreferrer"
-            className="shrink-0 rounded-full border border-blue-300/15 bg-blue-400/[0.07] px-2.5 py-1 text-[11px] font-semibold text-blue-100/70 transition-colors hover:border-blue-300/25 hover:bg-blue-400/[0.11] hover:text-blue-50 sm:px-3 sm:text-xs"
+            className="shrink-0 rounded-full border border-blue-300/20 bg-blue-400/[0.09] px-2.5 py-1 text-[11px] font-semibold text-blue-50/80 transition-colors hover:border-blue-300/35 hover:bg-blue-400/[0.14] hover:text-blue-50 sm:px-3 sm:text-xs"
           >
             Faucet
           </a>
