@@ -13,7 +13,7 @@ import {
 import CircleSwapBox from '@/app/components/CircleSwapBox'
 import { useAddressBook } from '@/app/hooks/useAddressBook'
 import { useSwapHistory, type SwapHistoryEntry, type TransactionType } from '@/app/hooks/useSwapHistory'
-import { hasWalletConnectProjectId } from '@/app/lib/wagmi'
+import { hasWalletConnectProjectId } from '@/app/lib/walletEnv'
 import {
   ARC_TESTNET_CHAIN_ID,
   ARC_TESTNET_NAME,
@@ -58,7 +58,7 @@ function PrimaryButton({ children, disabled, onClick }: { children: React.ReactN
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className={`w-full rounded-2xl py-3.5 text-sm font-semibold transition-all ${disabled ? 'cursor-not-allowed bg-white/[0.06] text-white/25' : 'bg-gradient-to-r from-blue-500 to-indigo-600 text-white shadow-lg shadow-blue-500/20 hover:from-blue-400 hover:to-indigo-500'}`}
+      className={`w-full rounded-2xl py-3.5 text-sm font-semibold transition-all ${disabled ? 'cursor-not-allowed bg-white/[0.07] text-white/45' : 'bg-gradient-to-r from-blue-500 to-indigo-600 text-white shadow-lg shadow-blue-500/20 hover:from-blue-400 hover:to-indigo-500'}`}
     >
       {children}
     </button>

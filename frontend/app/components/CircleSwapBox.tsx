@@ -26,7 +26,7 @@ import {
 import { ConnectButton } from '@rainbow-me/rainbowkit'
 import { encodeFunctionData, formatUnits, decodeEventLog } from 'viem'
 import { useSwapHistory } from '@/app/hooks/useSwapHistory'
-import { hasWalletConnectProjectId } from '@/app/lib/wagmi'
+import { hasWalletConnectProjectId } from '@/app/lib/walletEnv'
 
 // ─── Constants ─────────────────────────────────────────────────────────────────
 
@@ -1247,7 +1247,7 @@ export default function CircleSwapBox() {
                 </div>
               )}
 
-              <button type="button" onClick={handleSwapButtonClick} disabled={!canOpenModal} aria-label={`Swap ${tokenIn} for ${tokenOut}`} className={`w-full rounded-2xl py-4 text-base font-semibold tracking-wide transition-all duration-200 ${canOpenModal ? 'bg-gradient-to-r from-blue-500 to-indigo-600 text-white shadow-lg shadow-blue-500/25 hover:from-blue-400 hover:to-indigo-500 hover:shadow-blue-500/40 active:scale-[0.98]' : 'cursor-not-allowed bg-white/[0.06] text-white/25'}`}>
+              <button type="button" onClick={handleSwapButtonClick} disabled={!canOpenModal} aria-label={`Swap ${tokenIn} for ${tokenOut}`} className={`w-full rounded-2xl py-4 text-base font-semibold tracking-wide transition-all duration-200 ${canOpenModal ? 'bg-gradient-to-r from-blue-500 to-indigo-600 text-white shadow-lg shadow-blue-500/25 hover:from-blue-400 hover:to-indigo-500 hover:shadow-blue-500/40 active:scale-[0.98]' : 'cursor-not-allowed bg-white/[0.07] text-white/45'}`}>
                 {isActive ? (
                   <span className="flex items-center justify-center gap-2">
                     <Spinner />
@@ -1307,9 +1307,9 @@ export default function CircleSwapBox() {
           </div>
         </div>
 
-        <p className="mt-6 text-center text-xs text-white/20">
+        <p className="mt-6 text-center text-xs text-white/45">
           Powered by{' '}
-          <a href="https://developers.circle.com" target="_blank" rel="noopener noreferrer" className="text-white/30 underline-offset-2 hover:text-white/50 hover:underline">Circle Swap Kit</a>
+          <a href="https://developers.circle.com" target="_blank" rel="noopener noreferrer" className="text-white/60 underline-offset-2 hover:text-white/80 hover:underline">Circle Swap Kit</a>
           {' '}&middot; Arc Testnet only
         </p>
       </div>

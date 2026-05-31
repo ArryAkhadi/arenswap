@@ -4,6 +4,63 @@ import { ConnectButton } from '@rainbow-me/rainbowkit'
 import Link from 'next/link'
 import TransactionDashboard from '@/app/components/TransactionDashboard'
 
+function HeaderConnectButton() {
+  return (
+    <ConnectButton.Custom>
+      {({ account, chain, mounted, openAccountModal, openChainModal, openConnectModal }) => {
+        const ready = mounted
+        const connected = ready && account && chain
+
+        if (!ready) {
+          return (
+            <button
+              type="button"
+              disabled
+              className="rounded-full border border-white/[0.08] bg-white/[0.06] px-3 py-1.5 text-xs font-semibold text-white/45"
+            >
+              Connect Wallet
+            </button>
+          )
+        }
+
+        if (!connected) {
+          return (
+            <button
+              type="button"
+              onClick={openConnectModal}
+              className="rounded-full border border-blue-300/20 bg-blue-500/[0.12] px-3 py-1.5 text-xs font-semibold text-blue-50 transition-colors hover:border-blue-300/35 hover:bg-blue-500/[0.18]"
+            >
+              Connect Wallet
+            </button>
+          )
+        }
+
+        if (chain.unsupported) {
+          return (
+            <button
+              type="button"
+              onClick={openChainModal}
+              className="rounded-full border border-amber-400/25 bg-amber-500/[0.12] px-3 py-1.5 text-xs font-semibold text-amber-200 transition-colors hover:bg-amber-500/[0.18]"
+            >
+              Wrong network
+            </button>
+          )
+        }
+
+        return (
+          <button
+            type="button"
+            onClick={openAccountModal}
+            className="rounded-full border border-white/[0.08] bg-white/[0.06] px-3 py-1.5 text-xs font-semibold text-white/70 transition-colors hover:border-white/[0.14] hover:bg-white/[0.09] hover:text-white"
+          >
+            {account.displayName}
+          </button>
+        )
+      }}
+    </ConnectButton.Custom>
+  )
+}
+
 function Navbar() {
   return (
     <header className="sticky top-0 z-50 w-full border-b border-white/[0.07] bg-[#080a10]/75 backdrop-blur-xl">
@@ -28,7 +85,7 @@ function Navbar() {
             Faucet
           </a>
           <div className="min-w-0 shrink">
-            <ConnectButton chainStatus="icon" showBalance={false} accountStatus="avatar" />
+            <HeaderConnectButton />
           </div>
         </div>
       </div>
@@ -62,16 +119,13 @@ export default function Home() {
       <main className="relative z-10 flex flex-1 flex-col items-center px-4 pb-12 pt-6 sm:pt-8">
         <div className="mb-5 text-center">
           <h1 className="mb-2 text-3xl font-bold tracking-tight text-white sm:text-4xl">
-            Swap stablecoins on{' '}
-            <span className="bg-gradient-to-r from-blue-400 to-indigo-400 bg-clip-text text-transparent">
-              Arc Testnet
-            </span>
+            Swap stablecoins on <span className="bg-gradient-to-r from-blue-400 to-indigo-400 bg-clip-text text-transparent">Arc Testnet</span>
           </h1>
-          <p className="mx-auto max-w-xl text-sm text-white/48 sm:text-base">
+          <p className="mx-auto max-w-xl text-sm text-white/60 sm:text-base">
             Swap, send, and manage USDC, EURC, and cirBTC testnet tokens in one simple dApp.
           </p>
           <div className="mt-3 flex justify-center">
-            <span className="rounded-full border border-white/[0.08] bg-white/[0.035] px-3 py-1 text-[11px] font-semibold text-white/42">
+            <span className="rounded-full border border-white/[0.08] bg-white/[0.035] px-3 py-1 text-[11px] font-semibold text-white/55">
               Testnet only &middot; No real funds &middot; Built for Arc
             </span>
           </div>
@@ -81,7 +135,7 @@ export default function Home() {
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="min-w-0">
               <p className="text-sm font-semibold text-white">Need testnet tokens?</p>
-              <p className="mt-1 text-xs leading-relaxed text-white/42">
+              <p className="mt-1 text-xs leading-relaxed text-white/58">
                 Get USDC, EURC, and cirBTC from the Circle Faucet before testing Arenswap.
               </p>
             </div>
@@ -100,13 +154,13 @@ export default function Home() {
       </main>
 
       <footer className="relative z-10 border-t border-white/[0.05] py-6">
-        <p className="text-center text-xs text-white/20">
+        <p className="text-center text-xs text-white/45">
           Built on{' '}
-          <a href="https://docs.arc.io" target="_blank" rel="noopener noreferrer" className="text-white/30 underline-offset-2 hover:text-white/50 hover:underline">
+          <a href="https://docs.arc.io" target="_blank" rel="noopener noreferrer" className="text-white/60 underline-offset-2 hover:text-white/80 hover:underline">
             Arc Network
           </a>{' '}
           &middot; Powered by{' '}
-          <a href="https://developers.circle.com" target="_blank" rel="noopener noreferrer" className="text-white/30 underline-offset-2 hover:text-white/50 hover:underline">
+          <a href="https://developers.circle.com" target="_blank" rel="noopener noreferrer" className="text-white/60 underline-offset-2 hover:text-white/80 hover:underline">
             Circle Swap Kit
           </a>{' '}
           &middot; Arc Testnet only

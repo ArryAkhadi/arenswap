@@ -3,6 +3,7 @@
 import { getDefaultConfig } from '@rainbow-me/rainbowkit'
 import { http } from 'wagmi'
 import { defineChain } from 'viem'
+import { hasWalletConnectProjectId, walletConnectProjectId } from '@/app/lib/walletEnv'
 
 export const arcTestnet = defineChain({
   id: 5042002,
@@ -24,10 +25,13 @@ export const arcTestnet = defineChain({
   testnet: true,
 })
 
-export const walletConnectProjectId = process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID ?? ''
-export const hasWalletConnectProjectId = walletConnectProjectId.trim().length > 0
+type WagmiConfig = ReturnType<typeof getDefaultConfig>
 
-export const wagmiConfig = getDefaultConfig({
+const globalForWagmi = globalThis as typeof globalThis & {
+  __arenswapWagmiConfig?: WagmiConfig
+}
+
+export const wagmiConfig = globalForWagmi.__arenswapWagmiConfig ?? getDefaultConfig({
   appName: 'Arenswap',
   projectId: hasWalletConnectProjectId ? walletConnectProjectId : 'missing-walletconnect-project-id',
   chains: [arcTestnet],
@@ -36,3 +40,5 @@ export const wagmiConfig = getDefaultConfig({
   },
   ssr: true,
 })
+
+globalForWagmi.__arenswapWagmiConfig = wagmiConfig
