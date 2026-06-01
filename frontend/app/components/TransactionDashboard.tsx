@@ -834,17 +834,81 @@ function ApprovalsMode() {
   )
 }
 
-function HistoryMode() {
+function formatHistoryType(type: TransactionType | undefined): string {
+  const value = type ?? 'swap'
+  if (value === 'batch_send') return 'Batch'
+  if (value === 'revoke') return 'Approval'
+  return value.charAt(0).toUpperCase() + value.slice(1)
+}
+
+function getPrimaryTxHash(entry: SwapHistoryEntry | null): string | null {
+  if (!entry) return null
+  return entry.txHash ?? entry.swapTxHash ?? entry.approvalTxHash ?? entry.approveTxHash ?? null
+}
+
+function getHistorySlippage(entry: SwapHistoryEntry): string | null {
+  const withSlippage = entry as SwapHistoryEntry & { slippage?: string | number | null; slippagePercent?: string | number | null }
+  const value = withSlippage.slippagePercent ?? withSlippage.slippage ?? null
+  if (value === null || value === undefined || value === '') return null
+  return typeof value === 'number' ? `${value.toLocaleString(undefined, { maximumFractionDigits: 2 })}%` : String(value)
+}
+
+function TransactionDetailPanel({ entry }: { entry: SwapHistoryEntry | null }) {
+  if (!entry) {
+    return <p className="text-xs leading-relaxed text-white/42">No local transaction records yet.</p>
+  }
+
+  const txHash = getPrimaryTxHash(entry)
+  const type = entry.type ?? 'swap'
+  const sentAmount = entry.amountIn ?? entry.amount ?? null
+  const sentToken = entry.tokenIn ?? entry.token ?? null
+  const receivedAmount = entry.amountOut ?? entry.estimatedOut ?? null
+  const receivedToken = entry.tokenOut ?? null
+  const tokenDisplay = type === 'swap'
+    ? entry.tokenIn && entry.tokenOut ? `${entry.tokenIn} -> ${entry.tokenOut}` : '—'
+    : entry.token ?? '—'
+  const timestamp = entry.timestamp ? new Date(entry.timestamp).toLocaleString() : '—'
+
+  return (
+    <div className="space-y-1">
+      <MiniRow label="Status" value={String(entry.status).replace(/[-_]/g, ' ')} />
+      <MiniRow label="Type" value={formatHistoryType(type)} />
+      <MiniRow label="Tx hash" value={txHash ? truncateHash(txHash) : '—'} />
+      <MiniRow label="Token" value={tokenDisplay} />
+      <MiniRow label="Amount sent" value={sentAmount ? `${sentAmount} ${sentToken ?? ''}`.trim() : '—'} />
+      <MiniRow label="Amount received" value={receivedAmount ? `${receivedAmount} ${receivedToken ?? ''}`.trim() : '—'} />
+      <MiniRow label="Slippage" value={getHistorySlippage(entry) ?? '—'} />
+      <MiniRow label="Network" value="Arc Testnet" />
+      <MiniRow label="Timestamp" value={timestamp} />
+      {txHash && (
+        <div className="mt-4 grid grid-cols-2 gap-2">
+          <a href={`/tx/${txHash}`} className="rounded-xl border border-blue-400/20 bg-blue-500/[0.08] px-3 py-2 text-center text-xs font-semibold text-blue-200 hover:text-blue-100">
+            Receipt
+          </a>
+          <a href={explorerTxUrl(txHash)} target="_blank" rel="noopener noreferrer" className="rounded-xl border border-white/[0.08] bg-white/[0.03] px-3 py-2 text-center text-xs font-semibold text-white/55 hover:text-white/80">
+            Explorer
+          </a>
+          <div className="col-span-2 flex justify-center">
+            <CopyButton value={txHash} label="Copy tx hash" />
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function HistoryMode({ selectedId, onSelect }: { selectedId: string | null; onSelect: (id: string) => void }) {
   const { history, clearHistory, clearFailed } = useSwapHistory()
   const [filter, setFilter] = useState<'all' | TransactionType>('all')
   const filtered = filter === 'all' ? history : history.filter((entry) => (entry.type ?? 'swap') === filter)
+  const selectedEntry = filtered.find((entry) => entry.id === selectedId) ?? filtered[0] ?? null
 
   return (
     <UtilityCard title="Recent Transactions">
       <div className="space-y-4">
         <div className="flex flex-wrap gap-2">
-          {(['all', 'swap', 'send', 'batch_send', 'revoke'] as const).map((item) => (
-            <button key={item} type="button" onClick={() => setFilter(item)} className={`rounded-full border px-3 py-1 text-xs font-semibold ${filter === item ? 'border-blue-500/40 bg-blue-500/15 text-blue-300' : 'border-white/[0.08] text-white/35 hover:text-white/65'}`}>{item === 'batch_send' ? 'Batch' : item === 'all' ? 'All' : item}</button>
+          {(['all', 'swap', 'send', 'batch_send', 'approval', 'revoke'] as const).map((item) => (
+            <button key={item} type="button" onClick={() => setFilter(item)} className={`rounded-full border px-3 py-1 text-xs font-semibold ${filter === item ? 'border-blue-500/40 bg-blue-500/15 text-blue-300' : 'border-white/[0.08] text-white/35 hover:text-white/65'}`}>{item === 'batch_send' ? 'Batch' : item === 'all' ? 'All' : item === 'revoke' ? 'Revoke' : item}</button>
           ))}
         </div>
         <div className="flex gap-2">
@@ -862,27 +926,46 @@ function HistoryMode() {
                 : `No ${filter.replace('_', ' ')} records are stored locally yet.`}
             </p>
           </div>
-        ) : <TransactionList entries={filtered} />}
+        ) : (
+          <>
+            <TransactionList entries={filtered} selectedId={selectedEntry?.id ?? null} onSelect={onSelect} />
+            <div className="xl:hidden">
+              <SidePanel title="Transaction Detail">
+                <TransactionDetailPanel entry={selectedEntry} />
+              </SidePanel>
+            </div>
+          </>
+        )}
       </div>
     </UtilityCard>
   )
 }
 
-function TransactionList({ entries }: { entries: SwapHistoryEntry[] }) {
+function TransactionList({ entries, selectedId, onSelect }: { entries: SwapHistoryEntry[]; selectedId: string | null; onSelect: (id: string) => void }) {
   return (
     <div className="space-y-2">
       {entries.map((entry) => {
         const type = entry.type ?? 'swap'
-        const txHash = entry.txHash ?? entry.swapTxHash ?? entry.approvalTxHash ?? null
+        const txHash = getPrimaryTxHash(entry)
         const approvalHash = entry.approvalTxHash ?? entry.approveTxHash ?? null
         const status = String(entry.status).replace('-', '_')
+        const selected = selectedId === entry.id
         const statusClass = status === 'success'
           ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300'
           : status === 'verification_failed'
             ? 'border-amber-500/25 bg-amber-500/10 text-amber-300'
             : 'border-red-500/25 bg-red-500/10 text-red-300'
         return (
-          <div key={entry.id} className="rounded-2xl border border-white/[0.06] bg-white/[0.02] px-4 py-3">
+          <div
+            key={entry.id}
+            role="button"
+            tabIndex={0}
+            onClick={() => onSelect(entry.id)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' || event.key === ' ') onSelect(entry.id)
+            }}
+            className={`block w-full cursor-pointer rounded-2xl border px-4 py-3 text-left transition-colors ${selected ? 'border-blue-400/30 bg-blue-500/[0.08]' : 'border-white/[0.06] bg-white/[0.02] hover:border-white/[0.12] hover:bg-white/[0.04]'}`}
+          >
             <div className="mb-2 flex items-center justify-between gap-2">
               <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${statusClass}`}>{status.replace('_', ' ')}</span>
               <span className="text-[10px] text-white/25">{new Date(entry.timestamp).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
@@ -900,7 +983,7 @@ function TransactionList({ entries }: { entries: SwapHistoryEntry[] }) {
               <div className="mt-2 flex flex-wrap items-center gap-2">
                 {txHash && <a href={`/tx/${txHash}`} className="text-[11px] text-blue-300/70 underline underline-offset-2">Receipt</a>}
                 {approvalHash && <a href={explorerTxUrl(approvalHash)} target="_blank" rel="noopener noreferrer" className="text-[11px] text-white/35 underline underline-offset-2 hover:text-white/60">Approval {truncateHash(approvalHash)}</a>}
-                {txHash && <a href={explorerTxUrl(txHash)} target="_blank" rel="noopener noreferrer" className="text-[11px] text-emerald-500/70 underline underline-offset-2">Swap {truncateHash(txHash)}</a>}
+                {txHash && <a href={explorerTxUrl(txHash)} target="_blank" rel="noopener noreferrer" className="text-[11px] text-emerald-500/70 underline underline-offset-2">Tx {truncateHash(txHash)}</a>}
                 {txHash && <CopyButton value={txHash} label="Copy tx" />}
               </div>
             )}
@@ -933,17 +1016,19 @@ function DashboardSideRail({
   mode,
   bridgeSummary,
   swapSummary,
+  selectedHistoryId,
 }: {
   mode: Mode
   bridgeSummary: BridgeSummaryState | null
   swapSummary: SwapSummaryState | null
+  selectedHistoryId: string | null
 }) {
   const { address, isConnected } = useAccount()
   const chainId = useChainId()
   const { balances, loading, refresh } = useTokenBalances()
   const { history } = useSwapHistory()
   const recent = history.slice(0, 3)
-  const latest = recent[0]
+  const selectedHistoryEntry = history.find((entry) => entry.id === selectedHistoryId) ?? recent[0] ?? null
   const isArc = chainId === ARC_TESTNET_CHAIN_ID
   const statusPill = (
     <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${isConnected ? 'border-emerald-400/25 bg-emerald-500/10 text-emerald-300' : 'border-white/[0.08] bg-white/[0.03] text-white/50'}`}>
@@ -1053,21 +1138,7 @@ function DashboardSideRail({
 
       {mode === 'history' && (
         <SidePanel title="Transaction Detail">
-          {!latest ? (
-            <p className="text-xs leading-relaxed text-white/42">No local transaction records yet.</p>
-          ) : (
-            <div className="space-y-1">
-              <MiniRow label="Type" value={(latest.type ?? 'swap').replace('_', ' ')} />
-              <MiniRow label="Status" value={String(latest.status).replace('_', ' ')} />
-              <MiniRow label="Token" value={latest.token ?? latest.tokenIn ?? '--'} />
-              <MiniRow label="Amount" value={latest.amount ?? latest.amountIn ?? '--'} />
-              {(latest.txHash ?? latest.swapTxHash ?? latest.approvalTxHash) && (
-                <a href={`/tx/${latest.txHash ?? latest.swapTxHash ?? latest.approvalTxHash}`} className="mt-3 block rounded-2xl border border-blue-400/20 bg-blue-500/[0.08] px-3 py-2 text-center text-xs font-semibold text-blue-200 hover:text-blue-100">
-                  Open receipt
-                </a>
-              )}
-            </div>
-          )}
+          <TransactionDetailPanel entry={selectedHistoryEntry} />
         </SidePanel>
       )}
     </aside>
@@ -1079,6 +1150,7 @@ export default function TransactionDashboard() {
   const [presetToken, setPresetToken] = useState<SupportedToken>('USDC')
   const [bridgeSummary, setBridgeSummary] = useState<BridgeSummaryState | null>(null)
   const [swapSummary, setSwapSummary] = useState<SwapSummaryState | null>(null)
+  const [selectedHistoryId, setSelectedHistoryId] = useState<string | null>(null)
 
   return (
     <div className="mx-auto grid w-full max-w-3xl grid-cols-1 gap-4 xl:max-w-7xl xl:grid-cols-[minmax(0,1fr)_420px] xl:items-start xl:gap-6">
@@ -1103,9 +1175,9 @@ export default function TransactionDashboard() {
         {mode === 'batch' && <BatchMode />}
         {mode === 'portfolio' && <PortfolioMode setMode={setMode} setPresetToken={setPresetToken} />}
         {mode === 'approvals' && <ApprovalsMode />}
-        {mode === 'history' && <HistoryMode />}
+        {mode === 'history' && <HistoryMode selectedId={selectedHistoryId} onSelect={setSelectedHistoryId} />}
       </div>
-      <DashboardSideRail mode={mode} bridgeSummary={bridgeSummary} swapSummary={swapSummary} />
+      <DashboardSideRail mode={mode} bridgeSummary={bridgeSummary} swapSummary={swapSummary} selectedHistoryId={selectedHistoryId} />
     </div>
   )
 }
