@@ -746,8 +746,6 @@ function PortfolioMode({ setMode, setPresetToken, onSummaryChange }: { setMode: 
   const { balances, loading, refresh } = useTokenBalances()
   const hasAnyBalance = SUPPORTED_TOKENS.some((token) => (balances[token] ?? BigInt(0)) > BigInt(0))
   const loadedBalanceCount = SUPPORTED_TOKENS.filter((token) => balances[token] !== null).length
-  const totalOnArc = loadedBalanceCount > 0 ? `${loadedBalanceCount} token${loadedBalanceCount === 1 ? '' : 's'}` : '—'
-
   useEffect(() => {
     onSummaryChange?.({
       walletAddress: address ?? null,
@@ -770,15 +768,6 @@ function PortfolioMode({ setMode, setPresetToken, onSummaryChange }: { setMode: 
         </div>
       ) : chainId !== ARC_TESTNET_CHAIN_ID ? <ChainGate /> : (
         <div className="space-y-4">
-          <div className="rounded-2xl border border-blue-400/15 bg-blue-500/[0.055] p-4">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-wider text-blue-200/55">Total on Arc</p>
-                <p className="mt-1 text-2xl font-semibold text-white">{totalOnArc}</p>
-              </div>
-              <span className="rounded-full border border-blue-400/20 bg-blue-500/10 px-3 py-1 text-xs font-semibold text-blue-200">Arc Testnet</span>
-            </div>
-          </div>
           {loading && <p className="rounded-xl border border-blue-500/15 bg-blue-500/[0.06] px-4 py-3 text-xs text-blue-200/70">Checking Arc Testnet token balances...</p>}
           {!loading && !hasAnyBalance && (
             <p className="rounded-xl border border-white/[0.06] bg-white/[0.02] px-4 py-3 text-xs text-white/40">No balances found. Claim testnet tokens to get started.</p>
