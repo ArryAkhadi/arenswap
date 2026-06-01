@@ -22,7 +22,6 @@ import {
   SUPPORTED_TOKENS,
   TOKENS,
   decodeExpectedTransfer,
-  explorerAddressUrl,
   explorerTxUrl,
   formatTokenAmount,
   parseTokenAmount,
@@ -51,6 +50,17 @@ interface ApprovalSafetyState {
   approvedTokensCount: number
   unknownSpendersCount: number
   recommendedAction: string
+}
+
+interface PortfolioSummaryState {
+  walletAddress: string | null
+  network: 'Arc Testnet'
+  arcBalancesAvailable: boolean
+  crossChainBalances: 'Coming soon'
+  integration: 'Circle Unified Balance Kit ready'
+  balances: Record<SupportedToken, bigint | null>
+  loading: boolean
+  refresh: () => void
 }
 
 const MODE_LABELS: Array<{ value: Mode; label: string }> = [
@@ -689,21 +699,65 @@ function BatchMode() {
   )
 }
 
-function PortfolioMode({ setMode, setPresetToken }: { setMode: (mode: Mode) => void; setPresetToken: (token: SupportedToken) => void }) {
+function UnifiedBalancePanel({ summary }: { summary: PortfolioSummaryState | null }) {
+  return (
+    <div className="space-y-1">
+      <MiniRow label="Wallet" value={summary?.walletAddress ? truncateHash(summary.walletAddress) : '—'} />
+      <MiniRow label="Network" value="Arc Testnet" />
+      <MiniRow label="Arc balances" value={summary?.arcBalancesAvailable ? 'Available' : '—'} />
+      <MiniRow label="Cross-chain balances" value="Coming soon" />
+      <MiniRow label="Integration" value="Circle Unified Balance Kit ready" />
+      <button
+        type="button"
+        onClick={() => summary?.refresh()}
+        disabled={!summary || summary.loading}
+        className="mt-4 w-full rounded-2xl border border-white/[0.08] bg-white/[0.04] py-2 text-xs font-semibold text-white/55 hover:text-white/80 disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        {summary?.loading ? 'Refreshing...' : 'Refresh balances'}
+      </button>
+    </div>
+  )
+}
+
+function PortfolioMode({ setMode, setPresetToken, onSummaryChange }: { setMode: (mode: Mode) => void; setPresetToken: (token: SupportedToken) => void; onSummaryChange?: (summary: PortfolioSummaryState) => void }) {
   const { address, isConnected } = useAccount()
   const chainId = useChainId()
   const { balances, loading, refresh } = useTokenBalances()
   const hasAnyBalance = SUPPORTED_TOKENS.some((token) => (balances[token] ?? BigInt(0)) > BigInt(0))
+  const loadedBalanceCount = SUPPORTED_TOKENS.filter((token) => balances[token] !== null).length
+  const totalOnArc = loadedBalanceCount > 0 ? `${loadedBalanceCount} token${loadedBalanceCount === 1 ? '' : 's'}` : '—'
+
+  useEffect(() => {
+    onSummaryChange?.({
+      walletAddress: address ?? null,
+      network: 'Arc Testnet',
+      arcBalancesAvailable: loadedBalanceCount > 0,
+      crossChainBalances: 'Coming soon',
+      integration: 'Circle Unified Balance Kit ready',
+      balances,
+      loading,
+      refresh,
+    })
+  }, [address, balances, loadedBalanceCount, loading, onSummaryChange, refresh])
 
   return (
     <UtilityCard title="Portfolio">
-      {!isConnected ? <WalletGate /> : chainId !== ARC_TESTNET_CHAIN_ID ? <ChainGate /> : (
+      {!isConnected ? (
+        <div className="rounded-2xl border border-white/[0.06] bg-white/[0.02] px-4 py-5 text-center">
+          <p className="text-sm font-semibold text-white/60">Connect wallet to view balances.</p>
+          <div className="mt-3">
+            <ConnectButton label="Connect Wallet" />
+          </div>
+        </div>
+      ) : chainId !== ARC_TESTNET_CHAIN_ID ? <ChainGate /> : (
         <div className="space-y-4">
-          <div className="rounded-2xl border border-white/[0.06] bg-white/[0.02] p-4">
-            <p className="mb-2 text-xs text-white/35">Wallet</p>
+          <div className="rounded-2xl border border-blue-400/15 bg-blue-500/[0.055] p-4">
             <div className="flex items-center justify-between gap-3">
-              <a href={explorerAddressUrl(address!)} target="_blank" rel="noopener noreferrer" className="min-w-0 truncate text-sm font-semibold text-white/70">{address}</a>
-              <CopyButton value={address!} />
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wider text-blue-200/55">Total on Arc</p>
+                <p className="mt-1 text-2xl font-semibold text-white">{totalOnArc}</p>
+              </div>
+              <span className="rounded-full border border-blue-400/20 bg-blue-500/10 px-3 py-1 text-xs font-semibold text-blue-200">Arc Testnet</span>
             </div>
           </div>
           {loading && <p className="rounded-xl border border-blue-500/15 bg-blue-500/[0.06] px-4 py-3 text-xs text-blue-200/70">Checking Arc Testnet token balances...</p>}
@@ -711,10 +765,13 @@ function PortfolioMode({ setMode, setPresetToken }: { setMode: (mode: Mode) => v
             <p className="rounded-xl border border-white/[0.06] bg-white/[0.02] px-4 py-3 text-xs text-white/40">No balances found. Claim testnet tokens to get started.</p>
           )}
           {SUPPORTED_TOKENS.map((token) => (
-            <div key={token} className="rounded-2xl border border-white/[0.06] bg-white/[0.02] p-4">
+            <div key={token} className="rounded-2xl border border-white/[0.07] bg-white/[0.025] p-4 shadow-inner shadow-white/[0.01]">
               <div className="mb-3 flex items-center justify-between">
-                <span className="text-sm font-semibold text-white">{token}</span>
-                <span className="text-sm text-white/60">{loading ? 'Checking...' : balances[token] !== null ? formatTokenAmount(balances[token]!, token) : 'Unavailable'}</span>
+                <div>
+                  <span className="text-sm font-semibold text-white">{token}</span>
+                  <p className="mt-0.5 text-xs text-white/35">Arc Testnet balance</p>
+                </div>
+                <span className="text-right text-sm font-semibold text-white/65">{loading ? 'Checking...' : balances[token] !== null ? formatTokenAmount(balances[token]!, token) : 'Unavailable'}</span>
               </div>
               <div className="grid grid-cols-3 gap-2">
                 <button type="button" onClick={() => { setPresetToken(token); setMode('swap') }} className="rounded-xl border border-white/[0.08] py-2 text-xs font-semibold text-white/45 hover:text-white/75">Swap</button>
@@ -724,6 +781,20 @@ function PortfolioMode({ setMode, setPresetToken }: { setMode: (mode: Mode) => v
             </div>
           ))}
           <PrimaryButton disabled={loading} onClick={refresh}>{loading ? 'Refreshing...' : 'Refresh balances'}</PrimaryButton>
+          <div className="xl:hidden">
+            <SidePanel title="Unified Balance">
+              <UnifiedBalancePanel summary={{
+                walletAddress: address ?? null,
+                network: 'Arc Testnet',
+                arcBalancesAvailable: loadedBalanceCount > 0,
+                crossChainBalances: 'Coming soon',
+                integration: 'Circle Unified Balance Kit ready',
+                balances,
+                loading,
+                refresh,
+              }} />
+            </SidePanel>
+          </div>
         </div>
       )}
     </UtilityCard>
@@ -1089,30 +1160,24 @@ function DashboardSideRail({
   mode,
   approvalSafety,
   bridgeSummary,
+  portfolioSummary,
   swapSummary,
   selectedHistoryId,
 }: {
   mode: Mode
   approvalSafety: ApprovalSafetyState | null
   bridgeSummary: BridgeSummaryState | null
+  portfolioSummary: PortfolioSummaryState | null
   swapSummary: SwapSummaryState | null
   selectedHistoryId: string | null
 }) {
-  const { address, isConnected } = useAccount()
-  const chainId = useChainId()
-  const { balances, loading, refresh } = useTokenBalances()
+  const { isConnected } = useAccount()
   const { history } = useSwapHistory()
   const recent = history.slice(0, 3)
   const selectedHistoryEntry = history.find((entry) => entry.id === selectedHistoryId) ?? recent[0] ?? null
-  const isArc = chainId === ARC_TESTNET_CHAIN_ID
   const statusPill = (
     <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${isConnected ? 'border-emerald-400/25 bg-emerald-500/10 text-emerald-300' : 'border-white/[0.08] bg-white/[0.03] text-white/50'}`}>
       {isConnected ? 'Connected' : 'Not connected'}
-    </span>
-  )
-  const networkPill = (
-    <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${isArc ? 'border-blue-400/25 bg-blue-500/10 text-blue-300' : 'border-amber-400/25 bg-amber-500/10 text-amber-300'}`}>
-      {isArc ? ARC_TESTNET_NAME : 'Switch required'}
     </span>
   )
 
@@ -1176,27 +1241,9 @@ function DashboardSideRail({
       )}
 
       {mode === 'portfolio' && (
-        <SidePanel title="Wallet Overview">
-            <div className="space-y-1">
-              <MiniRow label="Status" value={statusPill} />
-              <MiniRow label="Network" value={networkPill} />
-              <MiniRow label="Assets" value="3 testnet tokens" />
-              {address && (
-                <div className="flex items-center justify-between gap-2 border-b border-white/[0.06] py-2">
-                  <a href={explorerAddressUrl(address)} target="_blank" rel="noopener noreferrer" className="min-w-0 truncate font-mono text-xs text-white/60 hover:text-white/80">
-                    {truncateHash(address)}
-                  </a>
-                  <CopyButton value={address} />
-                </div>
-              )}
-              {SUPPORTED_TOKENS.map((token) => (
-                <MiniRow key={token} label={token} value={loading ? 'Checking...' : balances[token] !== null ? formatTokenAmount(balances[token]!, token) : '--'} />
-              ))}
-              <button type="button" onClick={refresh} disabled={loading || !isConnected} className="mt-3 w-full rounded-2xl border border-white/[0.08] bg-white/[0.04] py-2 text-xs font-semibold text-white/55 hover:text-white/80 disabled:cursor-not-allowed disabled:opacity-50">
-                {loading ? 'Refreshing...' : 'Refresh'}
-              </button>
-            </div>
-          </SidePanel>
+        <SidePanel title="Unified Balance">
+          <UnifiedBalancePanel summary={portfolioSummary} />
+        </SidePanel>
       )}
 
       {mode === 'approvals' && (
@@ -1219,6 +1266,7 @@ export default function TransactionDashboard() {
   const [presetToken, setPresetToken] = useState<SupportedToken>('USDC')
   const [approvalSafety, setApprovalSafety] = useState<ApprovalSafetyState | null>(null)
   const [bridgeSummary, setBridgeSummary] = useState<BridgeSummaryState | null>(null)
+  const [portfolioSummary, setPortfolioSummary] = useState<PortfolioSummaryState | null>(null)
   const [swapSummary, setSwapSummary] = useState<SwapSummaryState | null>(null)
   const [selectedHistoryId, setSelectedHistoryId] = useState<string | null>(null)
 
@@ -1243,11 +1291,11 @@ export default function TransactionDashboard() {
         {mode === 'swap' && <CircleSwapBox onSummaryChange={setSwapSummary} />}
         {mode === 'send' && <SendMode presetToken={presetToken} />}
         {mode === 'batch' && <BatchMode />}
-        {mode === 'portfolio' && <PortfolioMode setMode={setMode} setPresetToken={setPresetToken} />}
+        {mode === 'portfolio' && <PortfolioMode setMode={setMode} setPresetToken={setPresetToken} onSummaryChange={setPortfolioSummary} />}
         {mode === 'approvals' && <ApprovalsMode onSafetyChange={setApprovalSafety} />}
         {mode === 'history' && <HistoryMode selectedId={selectedHistoryId} onSelect={setSelectedHistoryId} />}
       </div>
-      <DashboardSideRail mode={mode} approvalSafety={approvalSafety} bridgeSummary={bridgeSummary} swapSummary={swapSummary} selectedHistoryId={selectedHistoryId} />
+      <DashboardSideRail mode={mode} approvalSafety={approvalSafety} bridgeSummary={bridgeSummary} portfolioSummary={portfolioSummary} swapSummary={swapSummary} selectedHistoryId={selectedHistoryId} />
     </div>
   )
 }
