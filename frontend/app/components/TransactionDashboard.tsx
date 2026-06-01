@@ -33,7 +33,7 @@ import {
 type Mode = 'bridge' | 'swap' | 'send' | 'batch' | 'portfolio' | 'approvals' | 'history'
 type TxStatus = 'idle' | 'review' | 'pending' | 'success' | 'verification_failed' | 'rejected' | 'error'
 type BridgeSourceNetwork = 'Ethereum' | 'Base' | 'Arbitrum' | 'Avalanche' | 'Polygon' | 'Optimism'
-type GasMode = 'User pays gas' | 'Pay gas with USDC' | 'Sponsored gas'
+type GasMode = 'User pays gas'
 
 interface SendSummaryState {
   recipient: string
@@ -67,16 +67,14 @@ interface PortfolioSummaryState {
   walletAddress: string | null
   network: 'Arc Testnet'
   arcBalancesAvailable: boolean
-  crossChainBalances: 'Coming soon'
-  integration: 'Circle Unified Balance Kit ready'
   balances: Record<SupportedToken, bigint | null>
   loading: boolean
   refresh: () => void
 }
 
 const MODE_LABELS: Array<{ value: Mode; label: string }> = [
-  { value: 'bridge', label: 'Bridge' },
   { value: 'swap', label: 'Swap' },
+  { value: 'bridge', label: 'Bridge' },
   { value: 'send', label: 'Send' },
   { value: 'batch', label: 'Batch' },
   { value: 'portfolio', label: 'Portfolio' },
@@ -85,11 +83,6 @@ const MODE_LABELS: Array<{ value: Mode; label: string }> = [
 ]
 
 const BRIDGE_SOURCE_NETWORKS: BridgeSourceNetwork[] = ['Ethereum', 'Base', 'Arbitrum', 'Avalanche', 'Polygon', 'Optimism']
-const GAS_MODE_OPTIONS: Array<{ value: GasMode; label: string; disabled?: boolean; helper?: string }> = [
-  { value: 'User pays gas', label: 'User pays gas' },
-  { value: 'Pay gas with USDC', label: 'Pay gas with USDC', disabled: true, helper: 'Coming soon' },
-  { value: 'Sponsored gas', label: 'Sponsored gas', disabled: true, helper: 'Coming soon' },
-]
 
 function nowMs(): number {
   return new Date().getTime()
@@ -129,31 +122,6 @@ function TokenSelect({ value, onChange, disabled }: { value: SupportedToken; onC
         <option key={token} value={token} className="bg-[#111318] text-white">{token}</option>
       ))}
     </select>
-  )
-}
-
-function GasModeSelector({ value, onChange, disabled }: { value: GasMode; onChange: (mode: GasMode) => void; disabled?: boolean }) {
-  return (
-    <div className="space-y-2 rounded-2xl border border-white/[0.06] bg-white/[0.02] p-3">
-      <div className="flex items-center justify-between gap-3">
-        <FieldLabel>Gas mode</FieldLabel>
-        <span className="text-[11px] text-white/32">USDC on Arc Testnet</span>
-      </div>
-      <div className="grid grid-cols-3 gap-1.5">
-        {GAS_MODE_OPTIONS.map((option) => (
-          <button
-            key={option.value}
-            type="button"
-            onClick={() => !option.disabled && onChange(option.value)}
-            disabled={disabled || option.disabled}
-            className={`rounded-xl border px-2 py-2 text-xs font-semibold transition-colors ${value === option.value ? 'border-blue-400/35 bg-blue-500/15 text-blue-100' : 'border-white/[0.07] bg-white/[0.025] text-white/45 hover:text-white/70 disabled:cursor-not-allowed disabled:text-white/25'}`}
-          >
-            <span className="block truncate">{option.label}</span>
-            {option.helper && <span className="mt-0.5 block text-[10px] font-medium text-white/25">{option.helper}</span>}
-          </button>
-        ))}
-      </div>
-    </div>
   )
 }
 
@@ -361,7 +329,7 @@ function BridgeMode({ onSummaryChange }: { onSummaryChange?: (summary: BridgeSum
       asset: 'USDC',
       amount,
       destination,
-      status: 'Ready for Bridge Kit integration',
+      status: 'Bridge integration pending',
     })
   }, [amount, destination, fromNetwork, onSummaryChange])
 
@@ -369,7 +337,7 @@ function BridgeMode({ onSummaryChange }: { onSummaryChange?: (summary: BridgeSum
     ? 'Enter amount'
     : destination === '' || !destinationIsValid
       ? 'Enter destination'
-      : 'Bridge Kit integration coming soon'
+      : 'Bridge integration pending'
 
   return (
     <UtilityCard title="Bridge to Arc">
@@ -440,7 +408,7 @@ function BridgeMode({ onSummaryChange }: { onSummaryChange?: (summary: BridgeSum
           <PrimaryButton disabled onClick={() => {}}>{bridgeButtonText}</PrimaryButton>
         )}
 
-        <p className="rounded-xl border border-white/[0.06] bg-white/[0.02] px-4 py-3 text-xs leading-relaxed text-white/42">
+        <p className="px-1 text-xs leading-relaxed text-white/35">
           Bridge execution is not enabled yet. No bridge transaction will be submitted from this screen.
         </p>
       </div>
@@ -460,7 +428,7 @@ function SendMode({ presetToken, onSummaryChange }: { presetToken?: SupportedTok
   const [recipient, setRecipient] = useState('')
   const [amount, setAmount] = useState('')
   const [label, setLabel] = useState('')
-  const [gasMode, setGasMode] = useState<GasMode>('User pays gas')
+  const gasMode: GasMode = 'User pays gas'
   const [status, setStatus] = useState<TxStatus>('idle')
   const [message, setMessage] = useState<string | null>(null)
   const [txHash, setTxHash] = useState<string | null>(null)
@@ -573,9 +541,6 @@ function SendMode({ presetToken, onSummaryChange }: { presetToken?: SupportedTok
                 { label: 'Amount', value: `${amount} ${token}` },
                 { label: 'Recipient', value: recipient },
                 { label: 'Network', value: ARC_TESTNET_NAME },
-                { label: 'Gas mode', value: gasMode },
-                { label: 'Estimated fee', value: '—' },
-                { label: 'Gas token', value: 'USDC on Arc Testnet' },
               ]}
               onCancel={() => setStatus('idle')}
               onConfirm={executeSend}
@@ -603,7 +568,6 @@ function SendMode({ presetToken, onSummaryChange }: { presetToken?: SupportedTok
             </div>
             <button type="button" onClick={() => { const bal = balances[token]; if (bal !== null) setAmount(formatTokenAmount(bal, token).replace(/,/g, '')) }} className="mt-6 rounded-xl border border-white/[0.08] px-3 text-xs font-semibold text-white/45 hover:text-white/75">Max</button>
           </div>
-          <GasModeSelector value={gasMode} onChange={setGasMode} disabled={status === 'pending'} />
           <div className="rounded-2xl border border-white/[0.06] bg-white/[0.02] p-3">
             <div className="mb-2 flex gap-2">
               <input value={label} onChange={(event) => setLabel(event.target.value)} className="min-w-0 flex-1 rounded-lg border border-white/[0.08] bg-white/[0.03] px-3 py-2 text-xs text-white outline-none" placeholder="Address label" />
@@ -763,8 +727,7 @@ function UnifiedBalancePanel({ summary }: { summary: PortfolioSummaryState | nul
       <MiniRow label="Wallet" value={summary?.walletAddress ? truncateHash(summary.walletAddress) : '—'} />
       <MiniRow label="Network" value="Arc Testnet" />
       <MiniRow label="Arc balances" value={summary?.arcBalancesAvailable ? 'Available' : '—'} />
-      <MiniRow label="Cross-chain balances" value="Coming soon" />
-      <MiniRow label="Integration" value="Circle Unified Balance Kit ready" />
+      <p className="border-b border-white/[0.06] py-2 text-xs text-white/35">Cross-chain balances planned</p>
       <button
         type="button"
         onClick={() => summary?.refresh()}
@@ -790,8 +753,6 @@ function PortfolioMode({ setMode, setPresetToken, onSummaryChange }: { setMode: 
       walletAddress: address ?? null,
       network: 'Arc Testnet',
       arcBalancesAvailable: loadedBalanceCount > 0,
-      crossChainBalances: 'Coming soon',
-      integration: 'Circle Unified Balance Kit ready',
       balances,
       loading,
       refresh,
@@ -845,8 +806,6 @@ function PortfolioMode({ setMode, setPresetToken, onSummaryChange }: { setMode: 
                 walletAddress: address ?? null,
                 network: 'Arc Testnet',
                 arcBalancesAvailable: loadedBalanceCount > 0,
-                crossChainBalances: 'Coming soon',
-                integration: 'Circle Unified Balance Kit ready',
                 balances,
                 loading,
                 refresh,
@@ -1251,7 +1210,7 @@ function DashboardSideRail({
             <MiniRow label="Asset" value="USDC" />
             <MiniRow label="Amount" value={bridgeSummary?.amount ? `${bridgeSummary.amount} USDC` : 'Enter amount'} />
             <MiniRow label="Destination" value={bridgeSummary?.destination ? truncateHash(bridgeSummary.destination) : 'Set wallet'} />
-            <MiniRow label="Status" value={bridgeSummary?.status ?? 'Ready for Bridge Kit integration'} />
+            <MiniRow label="Status" value={bridgeSummary?.status ?? 'Bridge integration pending'} />
           </div>
         </SidePanel>
       )}
@@ -1267,9 +1226,7 @@ function DashboardSideRail({
               <MiniRow label="Min received" value={swapSummary.minReceived ? `${swapSummary.minReceived} ${swapSummary.tokenOut}` : swapSummary.status} />
               <MiniRow label="Slippage" value={`${swapSummary.slippagePercent.toLocaleString(undefined, { maximumFractionDigits: 2 })}%`} />
               <MiniRow label="Fee" value={swapSummary.networkFee} />
-              <MiniRow label="Gas mode" value={swapSummary.gasMode} />
-              <MiniRow label="Estimated fee" value={swapSummary.networkFee || '—'} />
-              <MiniRow label="Gas token" value={swapSummary.gasToken} />
+              <MiniRow label="Gas" value={swapSummary.gasToken} />
               <MiniRow label="Route" value={swapSummary.route} />
               <MiniRow label="Status" value={swapSummary.status} />
             </div>
@@ -1284,9 +1241,7 @@ function DashboardSideRail({
             <MiniRow label="Token" value={sendSummary?.token ?? 'Selected in form'} />
             <MiniRow label="Amount" value={sendSummary?.amount ? `${sendSummary.amount} ${sendSummary.token}` : 'Entered in form'} />
             <MiniRow label="Balance after" value="Calculated after review" />
-            <MiniRow label="Gas mode" value={sendSummary?.gasMode ?? 'User pays gas'} />
-            <MiniRow label="Estimated fee" value={sendSummary?.estimatedFee ?? '—'} />
-            <MiniRow label="Gas token" value={sendSummary?.gasToken ?? 'USDC on Arc Testnet'} />
+            <MiniRow label="Gas" value={sendSummary?.gasToken ?? 'USDC on Arc Testnet'} />
             <MiniRow label="Status" value={isConnected ? sendSummary?.status ?? 'Ready to review' : 'Connect wallet'} />
           </div>
         </SidePanel>
@@ -1339,13 +1294,13 @@ export default function TransactionDashboard() {
   return (
     <div className="mx-auto grid w-full max-w-3xl grid-cols-1 gap-4 xl:max-w-7xl xl:grid-cols-[minmax(0,1fr)_420px] xl:items-start xl:gap-6">
       <div className="xl:col-span-2">
-        <div className="grid w-full grid-cols-3 gap-1.5 rounded-2xl border border-white/[0.09] bg-[#10131b]/78 p-1.5 shadow-xl shadow-black/25 backdrop-blur-xl sm:grid-cols-7">
+        <div className="grid w-full grid-cols-3 gap-1 rounded-2xl border border-white/[0.075] bg-[#10131b]/72 p-1.5 shadow-xl shadow-black/20 backdrop-blur-xl sm:grid-cols-7">
         {MODE_LABELS.map((item) => (
           <button
             key={item.value}
             type="button"
             onClick={() => setMode(item.value)}
-            className={`rounded-xl px-2.5 py-2 text-xs font-semibold transition-colors ${mode === item.value ? 'bg-gradient-to-r from-blue-500/40 to-indigo-500/35 text-blue-50 shadow-sm shadow-blue-500/15' : 'text-white/55 hover:bg-white/[0.06] hover:text-white/82'}`}
+            className={`rounded-xl px-2.5 py-2 text-xs font-semibold transition-colors ${mode === item.value ? 'bg-gradient-to-r from-blue-500/70 to-indigo-500/60 text-white shadow-sm shadow-blue-500/20' : 'text-white/62 hover:bg-white/[0.045] hover:text-white/90'}`}
           >
             {item.label}
           </button>

@@ -155,13 +155,12 @@ export default function Home() {
         <p className="text-center text-xs text-white/45">
           Built on{' '}
           <a href="https://docs.arc.io" target="_blank" rel="noopener noreferrer" className="text-white/60 underline-offset-2 hover:text-white/80 hover:underline">
-            Arc Network
+            Arc
           </a>{' '}
           &middot; Powered by{' '}
           <a href="https://developers.circle.com" target="_blank" rel="noopener noreferrer" className="text-white/60 underline-offset-2 hover:text-white/80 hover:underline">
             Circle Swap Kit
-          </a>{' '}
-          &middot; Arc Testnet only
+          </a>
         </p>
       </footer>
     </div>
