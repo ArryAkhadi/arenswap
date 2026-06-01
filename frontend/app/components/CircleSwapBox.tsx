@@ -49,6 +49,8 @@ export interface SwapSummaryState {
   route: string
   status: string
   balanceIn: string | null
+  gasMode: GasMode
+  gasToken: 'USDC on Arc Testnet'
 }
 
 const TOKEN_DECIMALS: Record<SupportedToken, number> = {
@@ -61,6 +63,12 @@ const SLIPPAGE_PRESETS = ['0.1', '0.5', '1'] as const
 const SLIPPAGE_CHOICES = [...SLIPPAGE_PRESETS, 'custom'] as const
 type SlippageMode = (typeof SLIPPAGE_PRESETS)[number] | 'custom'
 const LOW_SLIPPAGE_MESSAGE = 'Slippage too low. Try 1% or higher.'
+type GasMode = 'User pays gas' | 'Pay gas with USDC' | 'Sponsored gas'
+const GAS_MODE_OPTIONS: Array<{ value: GasMode; label: string; disabled?: boolean; helper?: string }> = [
+  { value: 'User pays gas', label: 'User pays gas' },
+  { value: 'Pay gas with USDC', label: 'Pay gas with USDC', disabled: true, helper: 'Coming soon' },
+  { value: 'Sponsored gas', label: 'Sponsored gas', disabled: true, helper: 'Coming soon' },
+]
 
 // Canonical ERC-20 addresses on Arc Testnet (from Circle SDK token registry)
 const TOKEN_ADDRESSES: Record<SupportedToken, `0x${string}`> = {
@@ -469,11 +477,12 @@ interface ReviewModalProps {
   tokenOut: SupportedToken
   amountIn: string
   address: string
+  gasMode: GasMode
   onConfirm: () => void
   onCancel: () => void
 }
 
-function ReviewModal({ tokenIn, tokenOut, amountIn, address, onConfirm, onCancel }: ReviewModalProps) {
+function ReviewModal({ tokenIn, tokenOut, amountIn, address, gasMode, onConfirm, onCancel }: ReviewModalProps) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-labelledby="review-modal-title">
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onCancel} aria-hidden="true" />
@@ -487,6 +496,9 @@ function ReviewModal({ tokenIn, tokenOut, amountIn, address, onConfirm, onCancel
             <div className="border-t border-white/[0.06] pt-3 space-y-2">
               <ModalRow label="Network"  value={ARC_TESTNET_NAME} />
               <ModalRow label="Chain ID" value={String(ARC_TESTNET_CHAIN_ID)} />
+              <ModalRow label="Gas mode" value={gasMode} />
+              <ModalRow label="Estimated fee" value="—" />
+              <ModalRow label="Gas token" value="USDC on Arc Testnet" />
               <ModalRow label="Wallet"   value={`${address.slice(0, 6)}\u2026${address.slice(-4)}`} />
             </div>
           </div>
@@ -521,6 +533,7 @@ function QuotePreview({
   amountIn,
   estimatedOut,
   slippagePercent,
+  gasMode,
   quoteStatus,
   quoteError,
 }: {
@@ -529,6 +542,7 @@ function QuotePreview({
   amountIn: string
   estimatedOut: string | null
   slippagePercent: number
+  gasMode: GasMode
   quoteStatus: QuoteStatus
   quoteError: string | null
 }) {
@@ -577,6 +591,14 @@ function QuotePreview({
             <p className="text-white/38">Network fee</p>
             <p className="mt-1 font-semibold text-white/75">Wallet estimate</p>
           </div>
+          <div className="rounded-xl border border-white/[0.06] bg-black/10 px-3 py-2">
+            <p className="text-white/38">Gas mode</p>
+            <p className="mt-1 truncate font-semibold text-white/75">{gasMode}</p>
+          </div>
+          <div className="rounded-xl border border-white/[0.06] bg-black/10 px-3 py-2">
+            <p className="text-white/38">Gas token</p>
+            <p className="mt-1 font-semibold text-white/75">USDC on Arc</p>
+          </div>
         </div>
       )}
     </div>
@@ -622,6 +644,31 @@ function SlippageControl({
             }`}
           >
             {item === 'custom' ? 'Custom' : `${item}%`}
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function GasModeSelector({ value, onChange, disabled }: { value: GasMode; onChange: (mode: GasMode) => void; disabled?: boolean }) {
+  return (
+    <div className="space-y-2 rounded-2xl border border-white/[0.06] bg-white/[0.02] p-3">
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-xs font-semibold uppercase tracking-wider text-white/50">Gas mode</p>
+        <p className="text-[11px] text-white/32">USDC on Arc Testnet</p>
+      </div>
+      <div className="grid grid-cols-3 gap-1.5">
+        {GAS_MODE_OPTIONS.map((option) => (
+          <button
+            key={option.value}
+            type="button"
+            onClick={() => !option.disabled && onChange(option.value)}
+            disabled={disabled || option.disabled}
+            className={`rounded-xl border px-2 py-2 text-xs font-semibold transition-colors ${value === option.value ? 'border-blue-400/35 bg-blue-500/15 text-blue-100' : 'border-white/[0.07] bg-white/[0.025] text-white/45 hover:text-white/70 disabled:cursor-not-allowed disabled:text-white/25'}`}
+          >
+            <span className="block truncate">{option.label}</span>
+            {option.helper && <span className="mt-0.5 block text-[10px] font-medium text-white/25">{option.helper}</span>}
           </button>
         ))}
       </div>
@@ -704,6 +751,7 @@ export default function CircleSwapBox({ onSummaryChange }: { onSummaryChange?: (
   const [amountIn, setAmountIn] = useState('')
   const [slippageMode, setSlippageMode] = useState<SlippageMode>('1')
   const [customSlippage, setCustomSlippage] = useState('1')
+  const [gasMode, setGasMode] = useState<GasMode>('User pays gas')
 
   const [phase, setPhase] = useState<Phase>('idle')
   const [error, setError] = useState<string | null>(null)
@@ -1099,6 +1147,8 @@ export default function CircleSwapBox({ onSummaryChange }: { onSummaryChange?: (
       slippagePercent,
       networkFee: 'Wallet estimate',
       route: 'Circle Swap Kit',
+      gasMode,
+      gasToken: 'USDC on Arc Testnet',
       status: !isValidAmount(amountIn)
         ? 'Enter amount'
         : quoteStatus === 'loading'
@@ -1112,7 +1162,7 @@ export default function CircleSwapBox({ onSummaryChange }: { onSummaryChange?: (
                 : isActive ? 'Preparing quote' : 'Preview pending',
       balanceIn,
     })
-  }, [amountIn, balanceIn, estimatedOut, isActive, onSummaryChange, quoteError, quoteStatus, slippagePercent, summaryMinReceived, summaryRate, tokenIn, tokenOut])
+  }, [amountIn, balanceIn, estimatedOut, gasMode, isActive, onSummaryChange, quoteError, quoteStatus, slippagePercent, summaryMinReceived, summaryRate, tokenIn, tokenOut])
 
   //  Reset 
 
@@ -1468,7 +1518,7 @@ export default function CircleSwapBox({ onSummaryChange }: { onSummaryChange?: (
   return (
     <>
       {showModal && address && (
-        <ReviewModal tokenIn={tokenIn} tokenOut={tokenOut} amountIn={amountIn} address={address} onConfirm={handleConfirmedSwap} onCancel={handleModalCancel} />
+        <ReviewModal tokenIn={tokenIn} tokenOut={tokenOut} amountIn={amountIn} address={address} gasMode={gasMode} onConfirm={handleConfirmedSwap} onCancel={handleModalCancel} />
       )}
 
       <div className="flex w-full flex-col items-center">
@@ -1546,8 +1596,10 @@ export default function CircleSwapBox({ onSummaryChange }: { onSummaryChange?: (
 
               <SlippageControl mode={slippageMode} customValue={customSlippage} onModeChange={handleSlippageModeChange} onCustomChange={handleCustomSlippageChange} />
 
+              <GasModeSelector value={gasMode} onChange={setGasMode} disabled={isActive} />
+
               <div className="xl:hidden">
-                <QuotePreview tokenIn={tokenIn} tokenOut={tokenOut} amountIn={amountIn} estimatedOut={estimatedOut} slippagePercent={slippagePercent} quoteStatus={quoteStatus} quoteError={quoteError} />
+                <QuotePreview tokenIn={tokenIn} tokenOut={tokenOut} amountIn={amountIn} estimatedOut={estimatedOut} slippagePercent={slippagePercent} gasMode={gasMode} quoteStatus={quoteStatus} quoteError={quoteError} />
               </div>
 
               {(isActive || showResult || phase === 'error') && <StatusTimeline phase={phase} swapTxHash={swapTxHash} />}

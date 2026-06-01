@@ -33,6 +33,17 @@ import {
 type Mode = 'bridge' | 'swap' | 'send' | 'batch' | 'portfolio' | 'approvals' | 'history'
 type TxStatus = 'idle' | 'review' | 'pending' | 'success' | 'verification_failed' | 'rejected' | 'error'
 type BridgeSourceNetwork = 'Ethereum' | 'Base' | 'Arbitrum' | 'Avalanche' | 'Polygon' | 'Optimism'
+type GasMode = 'User pays gas' | 'Pay gas with USDC' | 'Sponsored gas'
+
+interface SendSummaryState {
+  recipient: string
+  token: SupportedToken
+  amount: string
+  gasMode: GasMode
+  estimatedFee: string
+  gasToken: 'USDC on Arc Testnet'
+  status: string
+}
 
 interface BridgeSummaryState {
   fromNetwork: BridgeSourceNetwork
@@ -74,6 +85,11 @@ const MODE_LABELS: Array<{ value: Mode; label: string }> = [
 ]
 
 const BRIDGE_SOURCE_NETWORKS: BridgeSourceNetwork[] = ['Ethereum', 'Base', 'Arbitrum', 'Avalanche', 'Polygon', 'Optimism']
+const GAS_MODE_OPTIONS: Array<{ value: GasMode; label: string; disabled?: boolean; helper?: string }> = [
+  { value: 'User pays gas', label: 'User pays gas' },
+  { value: 'Pay gas with USDC', label: 'Pay gas with USDC', disabled: true, helper: 'Coming soon' },
+  { value: 'Sponsored gas', label: 'Sponsored gas', disabled: true, helper: 'Coming soon' },
+]
 
 function nowMs(): number {
   return new Date().getTime()
@@ -113,6 +129,31 @@ function TokenSelect({ value, onChange, disabled }: { value: SupportedToken; onC
         <option key={token} value={token} className="bg-[#111318] text-white">{token}</option>
       ))}
     </select>
+  )
+}
+
+function GasModeSelector({ value, onChange, disabled }: { value: GasMode; onChange: (mode: GasMode) => void; disabled?: boolean }) {
+  return (
+    <div className="space-y-2 rounded-2xl border border-white/[0.06] bg-white/[0.02] p-3">
+      <div className="flex items-center justify-between gap-3">
+        <FieldLabel>Gas mode</FieldLabel>
+        <span className="text-[11px] text-white/32">USDC on Arc Testnet</span>
+      </div>
+      <div className="grid grid-cols-3 gap-1.5">
+        {GAS_MODE_OPTIONS.map((option) => (
+          <button
+            key={option.value}
+            type="button"
+            onClick={() => !option.disabled && onChange(option.value)}
+            disabled={disabled || option.disabled}
+            className={`rounded-xl border px-2 py-2 text-xs font-semibold transition-colors ${value === option.value ? 'border-blue-400/35 bg-blue-500/15 text-blue-100' : 'border-white/[0.07] bg-white/[0.025] text-white/45 hover:text-white/70 disabled:cursor-not-allowed disabled:text-white/25'}`}
+          >
+            <span className="block truncate">{option.label}</span>
+            {option.helper && <span className="mt-0.5 block text-[10px] font-medium text-white/25">{option.helper}</span>}
+          </button>
+        ))}
+      </div>
+    </div>
   )
 }
 
@@ -407,7 +448,7 @@ function BridgeMode({ onSummaryChange }: { onSummaryChange?: (summary: BridgeSum
   )
 }
 
-function SendMode({ presetToken }: { presetToken?: SupportedToken }) {
+function SendMode({ presetToken, onSummaryChange }: { presetToken?: SupportedToken; onSummaryChange?: (summary: SendSummaryState) => void }) {
   const { address, isConnected } = useAccount()
   const chainId = useChainId()
   const publicClient = usePublicClient()
@@ -419,6 +460,7 @@ function SendMode({ presetToken }: { presetToken?: SupportedToken }) {
   const [recipient, setRecipient] = useState('')
   const [amount, setAmount] = useState('')
   const [label, setLabel] = useState('')
+  const [gasMode, setGasMode] = useState<GasMode>('User pays gas')
   const [status, setStatus] = useState<TxStatus>('idle')
   const [message, setMessage] = useState<string | null>(null)
   const [txHash, setTxHash] = useState<string | null>(null)
@@ -427,6 +469,18 @@ function SendMode({ presetToken }: { presetToken?: SupportedToken }) {
   useEffect(() => {
     if (presetToken) queueMicrotask(() => setToken(presetToken))
   }, [presetToken])
+
+  useEffect(() => {
+    onSummaryChange?.({
+      recipient,
+      token,
+      amount,
+      gasMode,
+      estimatedFee: '—',
+      gasToken: 'USDC on Arc Testnet',
+      status: status === 'idle' ? 'Ready to review' : status.replace('_', ' '),
+    })
+  }, [amount, gasMode, onSummaryChange, recipient, status, token])
 
   const parsedAmount = parseTokenAmount(amount, token)
   const validation = useMemo(() => {
@@ -519,6 +573,9 @@ function SendMode({ presetToken }: { presetToken?: SupportedToken }) {
                 { label: 'Amount', value: `${amount} ${token}` },
                 { label: 'Recipient', value: recipient },
                 { label: 'Network', value: ARC_TESTNET_NAME },
+                { label: 'Gas mode', value: gasMode },
+                { label: 'Estimated fee', value: '—' },
+                { label: 'Gas token', value: 'USDC on Arc Testnet' },
               ]}
               onCancel={() => setStatus('idle')}
               onConfirm={executeSend}
@@ -546,6 +603,7 @@ function SendMode({ presetToken }: { presetToken?: SupportedToken }) {
             </div>
             <button type="button" onClick={() => { const bal = balances[token]; if (bal !== null) setAmount(formatTokenAmount(bal, token).replace(/,/g, '')) }} className="mt-6 rounded-xl border border-white/[0.08] px-3 text-xs font-semibold text-white/45 hover:text-white/75">Max</button>
           </div>
+          <GasModeSelector value={gasMode} onChange={setGasMode} disabled={status === 'pending'} />
           <div className="rounded-2xl border border-white/[0.06] bg-white/[0.02] p-3">
             <div className="mb-2 flex gap-2">
               <input value={label} onChange={(event) => setLabel(event.target.value)} className="min-w-0 flex-1 rounded-lg border border-white/[0.08] bg-white/[0.03] px-3 py-2 text-xs text-white outline-none" placeholder="Address label" />
@@ -1161,6 +1219,7 @@ function DashboardSideRail({
   approvalSafety,
   bridgeSummary,
   portfolioSummary,
+  sendSummary,
   swapSummary,
   selectedHistoryId,
 }: {
@@ -1168,6 +1227,7 @@ function DashboardSideRail({
   approvalSafety: ApprovalSafetyState | null
   bridgeSummary: BridgeSummaryState | null
   portfolioSummary: PortfolioSummaryState | null
+  sendSummary: SendSummaryState | null
   swapSummary: SwapSummaryState | null
   selectedHistoryId: string | null
 }) {
@@ -1207,6 +1267,9 @@ function DashboardSideRail({
               <MiniRow label="Min received" value={swapSummary.minReceived ? `${swapSummary.minReceived} ${swapSummary.tokenOut}` : swapSummary.status} />
               <MiniRow label="Slippage" value={`${swapSummary.slippagePercent.toLocaleString(undefined, { maximumFractionDigits: 2 })}%`} />
               <MiniRow label="Fee" value={swapSummary.networkFee} />
+              <MiniRow label="Gas mode" value={swapSummary.gasMode} />
+              <MiniRow label="Estimated fee" value={swapSummary.networkFee || '—'} />
+              <MiniRow label="Gas token" value={swapSummary.gasToken} />
               <MiniRow label="Route" value={swapSummary.route} />
               <MiniRow label="Status" value={swapSummary.status} />
             </div>
@@ -1217,12 +1280,14 @@ function DashboardSideRail({
       {mode === 'send' && (
         <SidePanel title="Transfer Review">
           <div className="space-y-1">
-            <MiniRow label="Recipient" value="Set in form" />
-            <MiniRow label="Token" value="Selected in form" />
-            <MiniRow label="Amount" value="Entered in form" />
+            <MiniRow label="Recipient" value={sendSummary?.recipient ? truncateHash(sendSummary.recipient) : 'Set in form'} />
+            <MiniRow label="Token" value={sendSummary?.token ?? 'Selected in form'} />
+            <MiniRow label="Amount" value={sendSummary?.amount ? `${sendSummary.amount} ${sendSummary.token}` : 'Entered in form'} />
             <MiniRow label="Balance after" value="Calculated after review" />
-            <MiniRow label="Network fee" value="Wallet estimate" />
-            <MiniRow label="Status" value={isConnected ? 'Ready to review' : 'Connect wallet'} />
+            <MiniRow label="Gas mode" value={sendSummary?.gasMode ?? 'User pays gas'} />
+            <MiniRow label="Estimated fee" value={sendSummary?.estimatedFee ?? '—'} />
+            <MiniRow label="Gas token" value={sendSummary?.gasToken ?? 'USDC on Arc Testnet'} />
+            <MiniRow label="Status" value={isConnected ? sendSummary?.status ?? 'Ready to review' : 'Connect wallet'} />
           </div>
         </SidePanel>
       )}
@@ -1267,6 +1332,7 @@ export default function TransactionDashboard() {
   const [approvalSafety, setApprovalSafety] = useState<ApprovalSafetyState | null>(null)
   const [bridgeSummary, setBridgeSummary] = useState<BridgeSummaryState | null>(null)
   const [portfolioSummary, setPortfolioSummary] = useState<PortfolioSummaryState | null>(null)
+  const [sendSummary, setSendSummary] = useState<SendSummaryState | null>(null)
   const [swapSummary, setSwapSummary] = useState<SwapSummaryState | null>(null)
   const [selectedHistoryId, setSelectedHistoryId] = useState<string | null>(null)
 
@@ -1289,13 +1355,13 @@ export default function TransactionDashboard() {
       <div className="w-full">
         {mode === 'bridge' && <BridgeMode onSummaryChange={setBridgeSummary} />}
         {mode === 'swap' && <CircleSwapBox onSummaryChange={setSwapSummary} />}
-        {mode === 'send' && <SendMode presetToken={presetToken} />}
+        {mode === 'send' && <SendMode presetToken={presetToken} onSummaryChange={setSendSummary} />}
         {mode === 'batch' && <BatchMode />}
         {mode === 'portfolio' && <PortfolioMode setMode={setMode} setPresetToken={setPresetToken} onSummaryChange={setPortfolioSummary} />}
         {mode === 'approvals' && <ApprovalsMode onSafetyChange={setApprovalSafety} />}
         {mode === 'history' && <HistoryMode selectedId={selectedHistoryId} onSelect={setSelectedHistoryId} />}
       </div>
-      <DashboardSideRail mode={mode} approvalSafety={approvalSafety} bridgeSummary={bridgeSummary} portfolioSummary={portfolioSummary} swapSummary={swapSummary} selectedHistoryId={selectedHistoryId} />
+      <DashboardSideRail mode={mode} approvalSafety={approvalSafety} bridgeSummary={bridgeSummary} portfolioSummary={portfolioSummary} sendSummary={sendSummary} swapSummary={swapSummary} selectedHistoryId={selectedHistoryId} />
     </div>
   )
 }
