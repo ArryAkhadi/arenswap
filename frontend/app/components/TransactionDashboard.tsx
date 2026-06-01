@@ -44,6 +44,15 @@ interface BridgeSummaryState {
   status: string
 }
 
+type ApprovalRisk = 'Safe' | 'Review' | 'Unknown'
+
+interface ApprovalSafetyState {
+  knownSpender: string | null
+  approvedTokensCount: number
+  unknownSpendersCount: number
+  recommendedAction: string
+}
+
 const MODE_LABELS: Array<{ value: Mode; label: string }> = [
   { value: 'bridge', label: 'Bridge' },
   { value: 'swap', label: 'Swap' },
@@ -721,7 +730,40 @@ function PortfolioMode({ setMode, setPresetToken }: { setMode: (mode: Mode) => v
   )
 }
 
-function ApprovalsMode() {
+function isHighApprovalAmount(token: SupportedToken, allowance: bigint): boolean {
+  const unlimitedThreshold = (BigInt(1) << BigInt(255))
+  const highThreshold = parseTokenAmount('1000000', token)
+  return allowance >= unlimitedThreshold || (highThreshold !== null && allowance >= highThreshold)
+}
+
+function getApprovalRisk(token: SupportedToken, allowance: bigint | null, spender: string | null): ApprovalRisk {
+  if (!spender || allowance === null) return 'Unknown'
+  if (spender.toLowerCase() !== CIRCLE_SWAP_ADAPTER.toLowerCase()) return 'Unknown'
+  if (allowance > BigInt(0) && isHighApprovalAmount(token, allowance)) return 'Review'
+  return 'Safe'
+}
+
+function RiskBadge({ risk }: { risk: ApprovalRisk }) {
+  const classes = risk === 'Safe'
+    ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300'
+    : risk === 'Review'
+      ? 'border-amber-500/25 bg-amber-500/10 text-amber-300'
+      : 'border-red-500/25 bg-red-500/10 text-red-300'
+  return <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${classes}`}>{risk}</span>
+}
+
+function ApprovalSafetyPanel({ safety }: { safety: ApprovalSafetyState | null }) {
+  return (
+    <div className="space-y-1">
+      <MiniRow label="Known spender" value={safety?.knownSpender ? truncateHash(safety.knownSpender) : 'Unknown'} />
+      <MiniRow label="Approved tokens" value={safety?.approvedTokensCount ?? 0} />
+      <MiniRow label="Unknown spenders" value={safety?.unknownSpendersCount ?? 0} />
+      <MiniRow label="Recommended action" value={safety?.recommendedAction ?? 'No action needed'} />
+    </div>
+  )
+}
+
+function ApprovalsMode({ onSafetyChange }: { onSafetyChange?: (safety: ApprovalSafetyState) => void }) {
   const { address, isConnected } = useAccount()
   const chainId = useChainId()
   const publicClient = usePublicClient()
@@ -733,6 +775,24 @@ function ApprovalsMode() {
   const [message, setMessage] = useState<string | null>(null)
   const hasLoadedAllowances = SUPPORTED_TOKENS.some((token) => allowances[token] !== null)
   const hasActiveAllowance = SUPPORTED_TOKENS.some((token) => (allowances[token] ?? BigInt(0)) > BigInt(0))
+  const safetySummary = useMemo<ApprovalSafetyState>(() => {
+    const activeKnownApprovals = SUPPORTED_TOKENS.filter((token) => (allowances[token] ?? BigInt(0)) > BigInt(0))
+    const unknownSpendersCount = SUPPORTED_TOKENS.filter((token) => getApprovalRisk(token, allowances[token], CIRCLE_SWAP_ADAPTER) === 'Unknown' && (allowances[token] ?? BigInt(0)) > BigInt(0)).length
+    return {
+      knownSpender: CIRCLE_SWAP_ADAPTER,
+      approvedTokensCount: activeKnownApprovals.length,
+      unknownSpendersCount,
+      recommendedAction: unknownSpendersCount > 0
+        ? 'Review unknown spenders'
+        : activeKnownApprovals.length > 0
+          ? 'Approvals look normal'
+          : 'No action needed',
+    }
+  }, [allowances])
+
+  useEffect(() => {
+    onSafetyChange?.(safetySummary)
+  }, [onSafetyChange, safetySummary])
 
   const refresh = useCallback(async () => {
     if (!address || !publicClient || chainId !== ARC_TESTNET_CHAIN_ID) return
@@ -813,11 +873,19 @@ function ApprovalsMode() {
           <p className="rounded-xl border border-white/[0.06] bg-white/[0.02] px-4 py-3 text-xs leading-relaxed text-white/35">Known swap spender: {truncateHash(CIRCLE_SWAP_ADAPTER)}. Unknown spenders are not shown or revoked.</p>
           {SUPPORTED_TOKENS.map((token) => {
             const allowance = allowances[token]
+            const spender = CIRCLE_SWAP_ADAPTER
+            const risk = getApprovalRisk(token, allowance, spender)
             return (
               <div key={token} className="rounded-2xl border border-white/[0.06] bg-white/[0.02] p-4">
-                <div className="mb-3 flex items-center justify-between">
-                  <span className="text-sm font-semibold text-white">{token}</span>
-                  <span className="text-xs text-white/50">{loading ? 'Checking...' : allowance !== null ? `${formatTokenAmount(allowance, token)} ${token}` : 'Unavailable'}</span>
+                <div className="mb-3 flex items-start justify-between gap-3">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-semibold text-white">{token}</span>
+                      <RiskBadge risk={risk} />
+                    </div>
+                    <p className="mt-1 text-xs text-white/35">Spender {spender ? truncateHash(spender) : 'Unknown'}</p>
+                  </div>
+                  <span className="text-right text-xs text-white/50">{loading ? 'Checking...' : allowance !== null ? `${formatTokenAmount(allowance, token)} ${token}` : 'Unavailable'}</span>
                 </div>
                 <button type="button" onClick={() => setReviewToken(token)} disabled={!allowance || allowance <= BigInt(0) || loading} className="w-full rounded-xl border border-white/[0.08] py-2 text-xs font-semibold text-white/45 hover:text-white/75 disabled:cursor-not-allowed disabled:opacity-30">Revoke</button>
               </div>
@@ -828,6 +896,11 @@ function ApprovalsMode() {
           )}
           <PrimaryButton disabled={loading} onClick={refresh}>{loading ? 'Refreshing...' : 'Refresh allowances'}</PrimaryButton>
           {message && <p className="rounded-xl border border-white/[0.06] bg-white/[0.02] px-4 py-3 text-xs text-white/45">{message}</p>}
+          <div className="xl:hidden">
+            <SidePanel title="Approval Safety">
+              <ApprovalSafetyPanel safety={safetySummary} />
+            </SidePanel>
+          </div>
         </div>
       )}
     </UtilityCard>
@@ -1014,11 +1087,13 @@ function MiniRow({ label, value }: { label: string; value: React.ReactNode }) {
 
 function DashboardSideRail({
   mode,
+  approvalSafety,
   bridgeSummary,
   swapSummary,
   selectedHistoryId,
 }: {
   mode: Mode
+  approvalSafety: ApprovalSafetyState | null
   bridgeSummary: BridgeSummaryState | null
   swapSummary: SwapSummaryState | null
   selectedHistoryId: string | null
@@ -1125,14 +1200,8 @@ function DashboardSideRail({
       )}
 
       {mode === 'approvals' && (
-        <SidePanel title="Risk Summary">
-          <div className="space-y-1">
-            <MiniRow label="Spender" value={truncateHash(CIRCLE_SWAP_ADAPTER)} />
-            <MiniRow label="Approved tokens" value="Shown in list" />
-            <MiniRow label="Scope" value="Circle swap adapter" />
-            <MiniRow label="Hint" value="Revoke unused approvals" />
-            <MiniRow label="Refresh" value="Use left panel" />
-          </div>
+        <SidePanel title="Approval Safety">
+          <ApprovalSafetyPanel safety={approvalSafety} />
         </SidePanel>
       )}
 
@@ -1148,6 +1217,7 @@ function DashboardSideRail({
 export default function TransactionDashboard() {
   const [mode, setMode] = useState<Mode>('swap')
   const [presetToken, setPresetToken] = useState<SupportedToken>('USDC')
+  const [approvalSafety, setApprovalSafety] = useState<ApprovalSafetyState | null>(null)
   const [bridgeSummary, setBridgeSummary] = useState<BridgeSummaryState | null>(null)
   const [swapSummary, setSwapSummary] = useState<SwapSummaryState | null>(null)
   const [selectedHistoryId, setSelectedHistoryId] = useState<string | null>(null)
@@ -1174,10 +1244,10 @@ export default function TransactionDashboard() {
         {mode === 'send' && <SendMode presetToken={presetToken} />}
         {mode === 'batch' && <BatchMode />}
         {mode === 'portfolio' && <PortfolioMode setMode={setMode} setPresetToken={setPresetToken} />}
-        {mode === 'approvals' && <ApprovalsMode />}
+        {mode === 'approvals' && <ApprovalsMode onSafetyChange={setApprovalSafety} />}
         {mode === 'history' && <HistoryMode selectedId={selectedHistoryId} onSelect={setSelectedHistoryId} />}
       </div>
-      <DashboardSideRail mode={mode} bridgeSummary={bridgeSummary} swapSummary={swapSummary} selectedHistoryId={selectedHistoryId} />
+      <DashboardSideRail mode={mode} approvalSafety={approvalSafety} bridgeSummary={bridgeSummary} swapSummary={swapSummary} selectedHistoryId={selectedHistoryId} />
     </div>
   )
 }
